@@ -113,6 +113,7 @@ void A2uiRenderer::RegisterStandardCatalog()
   mRegistry.Register("Modal",         [this](const ComponentModel& c, RenderContext& rc) { return RenderModal(c, rc.components, rc.data); });
   mRegistry.Register("List",          [this](const ComponentModel& c, RenderContext& rc) { return RenderList(c, rc.components, rc.data); });
   mRegistry.Register("Icon",          [this](const ComponentModel& c, RenderContext& rc) { return RenderIcon(c, rc.data); });
+  mRegistry.Register("View",          [this](const ComponentModel& c, RenderContext& rc) { return RenderView(c, rc.data); });
 }
 
 // ========================================================================

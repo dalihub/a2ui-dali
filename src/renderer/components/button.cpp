@@ -96,6 +96,7 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
   // on the 2nd+ row child by the gap logic, making buttons in a Row look uneven.)
   // Don't let the parent Column's align:stretch override our fixed size.
   button.SetLayoutParams(FlexLayoutParams::New().SetAlignSelf(FlexAlign::CENTER));
+  button.SetFocusable(true);
 
   // White outlined pill: white fill, light outline, near-black label. borderless = text-only.
   UiColor bgColor = COLOR_CARD_BG;       // white surface

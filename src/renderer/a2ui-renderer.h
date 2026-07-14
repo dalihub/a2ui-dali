@@ -116,6 +116,7 @@ private:
                             const SurfaceComponentsModel& components,
                             DataContext& ctx);
   Dali::Ui::View RenderIcon(const ComponentModel& comp, DataContext& ctx);
+  Dali::Ui::View RenderView(const ComponentModel& comp, DataContext& ctx);
 
   /// Data-driven child list: children = {path, componentId}. Iterates the data array at
   /// `path`, instantiates `componentId` per element under a per-item scoped DataContext,
