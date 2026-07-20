@@ -325,17 +325,10 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
     mImageThumbnailHint = false;
     mAvatarSmallHint = false;
 
-    if(gap > 0.0f && index > 0)
-    {
-      // (Tried halving the gap around Dividers to slim carded forms — but the web's divider spacing
-      // varies per card, so it over-shortened coffee/purchase and DROPPED the mean. Reverted: the
-      // ±1-2px per-card spacing drift is a documented limit, not cleanly fixable with one rule.)
-      uint16_t g = static_cast<uint16_t>(gap);
-      if(isRow)
-        child.SetMargin(Extents(g, 0, 0, 0));
-      else
-        child.SetMargin(Extents(0, 0, g, 0));
-    }
+    // (Tried halving the gap around Dividers to slim carded forms — but the web's divider spacing
+    // varies per card, so it over-shortened coffee/purchase and DROPPED the mean. Reverted: the
+    // ±1-2px per-card spacing drift is a documented limit, not cleanly fixable with one rule.)
+    ApplyItemGap(child, isRow, gap, index == 0);
 
     // Column align=center: centre Label text, and STRETCH full-width children so they
     // don't collapse to zero width — DALi FlexLayout collapses a MATCH_PARENT child
