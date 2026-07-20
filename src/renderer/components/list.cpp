@@ -45,11 +45,7 @@ bool A2uiRenderer::RenderTemplateChildren(const ComponentModel& comp,
             FlexLayoutParams::New().SetFlexGrow(1.0f).SetFlexShrink(1.0f).SetFlexBasis(0.0f));
           itemView.SetRequestedWidth(0.0f);
         }
-        if(gap > 0.0f && itemIndex > 0)
-        {
-          uint16_t g = static_cast<uint16_t>(gap);
-          itemView.SetMargin(isRow ? Extents(g, 0, 0, 0) : Extents(0, 0, g, 0));
-        }
+        ApplyItemGap(itemView, isRow, gap, itemIndex == 0);
         outContainer.Add(itemView);
       }
       itemIndex++;
@@ -131,12 +127,7 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
 
           View itemView = RenderComponent(tmplId, components, childCtx);
           sizeItemMainAxis(itemView);
-          if(gap > 0.0f && itemIndex > 0)
-          {
-            uint16_t g = static_cast<uint16_t>(gap);
-            itemView.SetMargin(
-              horizontal ? Extents(g, 0, 0, 0) : Extents(0, 0, g, 0));
-          }
+          ApplyItemGap(itemView, horizontal, gap, itemIndex == 0);
           listContainer.Add(itemView);
           itemIndex++;
         }
@@ -185,13 +176,7 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
             {
               View itemView = RenderComponent(tmplRootId, tmplCompModel, childCtx);
               sizeItemMainAxis(itemView);
-
-              if(gap > 0.0f && itemIndex > 0)
-              {
-                uint16_t g = static_cast<uint16_t>(gap);
-                itemView.SetMargin(
-                  horizontal ? Extents(g, 0, 0, 0) : Extents(0, 0, g, 0));
-              }
+              ApplyItemGap(itemView, horizontal, gap, itemIndex == 0);
               listContainer.Add(itemView);
             }
 
@@ -210,14 +195,7 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
   {
     View child = RenderComponent(childId, components, ctx);
     sizeItemMainAxis(child);
-
-    if(gap > 0.0f && index > 0)
-    {
-      uint16_t g = static_cast<uint16_t>(gap);
-      child.SetMargin(
-        horizontal ? Extents(g, 0, 0, 0) : Extents(0, 0, g, 0));
-    }
-
+    ApplyItemGap(child, horizontal, gap, index == 0);
     listContainer.Add(child);
     index++;
   }
