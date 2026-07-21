@@ -76,16 +76,17 @@ View A2uiRenderer::RenderTextField(const ComponentModel& comp, DataContext& ctx)
         }
       });
 
-    // DataModel → InputField (for server-side updates)
-    ctx.GetDataModel().Watch(boundPath,
-      [inputField](const std::string&, const std::string& val) mutable {
-        std::string current = inputField.GetText().CStr();
-        if(current != val)
-        {
-          inputField.SetText(Dali::String(val.c_str()));
-        }
-      });
   }
+
+  // DataModel → InputField (server-side updates). Outside the two-way block on purpose:
+  // write-back needs a plain {path}, but DISPLAY must also follow a FunctionCall value.
+  WatchBinding(valueNode, ctx, [inputField](const std::string& val) mutable {
+    std::string current = inputField.GetText().CStr();
+    if(current != val)
+    {
+      inputField.SetText(Dali::String(val.c_str()));
+    }
+  });
 
   container.Add(inputField);
 

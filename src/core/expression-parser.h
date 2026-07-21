@@ -20,6 +20,7 @@
 #include <string>
 #include <functional>
 #include <unordered_map>
+#include <vector>
 #include <dali-ui-foundation/integration-api/builder/tree-node.h>
 #include <dali-ui-foundation/integration-api/builder/json-parser.h>
 
@@ -58,6 +59,24 @@ public:
    * Register a custom function.
    */
   void RegisterFunction(const std::string& name, FunctionImpl impl);
+
+  /**
+   * Every data-model path a binding node reads, resolved against @p ctx.
+   *
+   * A binding is only reactive if we know what it depends on. For a plain
+   * {"path": …} that is the path itself, but a FunctionCall hides its inputs:
+   * nested {"path": …} nodes inside `args`, and — because `formatString` embeds
+   * expressions in a string literal — "${…}" tokens that no JSON walk would see.
+   * The spec requires such a call to re-run whenever any of those change, so the
+   * renderer watches every path this returns.
+   *
+   * @param[in]  node  The binding node (a property value; may be any node type)
+   * @param[in]  ctx   Scope used to resolve relative paths (list item scope)
+   * @param[out] out   Resolved absolute paths, appended, without duplicates
+   */
+  void CollectDependencyPaths(const Dali::Ui::Integration::TreeNode& node,
+                              const DataContext& ctx,
+                              std::vector<std::string>& out) const;
 
 private:
   /**

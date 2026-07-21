@@ -174,27 +174,23 @@ View A2uiRenderer::RenderChoicePicker(const ComponentModel& comp, DataContext& c
 
   // Watch for value changes → restyle every option's selected state (re-resolves the bound
   // node via isSelected so array-shaped selections restyle correctly too).
-  if(!boundPath.empty())
-  {
-    ctx.GetDataModel().Watch(boundPath,
-      [opts, chips, isSelected](const std::string&, const std::string&) mutable {
-        for(auto& o : *opts)
-        {
-          bool sel = isSelected(o.value);
-          if(chips)
-          {
-            o.row.SetBackgroundColor(sel ? COLOR_TEXT_DEFAULT : COLOR_CARD_BG);
-            o.lbl.SetTextColor(sel ? COLOR_CARD_BG : COLOR_TEXT_DEFAULT);
-            o.row.SetBorderlineWidth(sel ? 0.0f : Metrics::BorderInput());
-            o.row.SetBorderlineColor(COLOR_BTN_BORDER);
-          }
-          else if(o.icon)
-          {
-            o.icon.SetBackgroundColor(sel ? COLOR_CHECK_ON : COLOR_CHECK_OFF);
-          }
-        }
-      });
-  }
+  WatchBinding(valueNode, ctx, [opts, chips, isSelected](const std::string&) mutable {
+    for(auto& o : *opts)
+    {
+      bool sel = isSelected(o.value);
+      if(chips)
+      {
+        o.row.SetBackgroundColor(sel ? COLOR_TEXT_DEFAULT : COLOR_CARD_BG);
+        o.lbl.SetTextColor(sel ? COLOR_CARD_BG : COLOR_TEXT_DEFAULT);
+        o.row.SetBorderlineWidth(sel ? 0.0f : Metrics::BorderInput());
+        o.row.SetBorderlineColor(COLOR_BTN_BORDER);
+      }
+      else if(o.icon)
+      {
+        o.icon.SetBackgroundColor(sel ? COLOR_CHECK_ON : COLOR_CHECK_OFF);
+      }
+    }
+  });
 
   // Chips picker WITH a label: stack the label above the wrapping chip row in an outer Column so
   // it lines up with the other form fields' labels (e.g. the invitation builder "Location").

@@ -79,14 +79,12 @@ View A2uiRenderer::RenderDateTimeInput(const ComponentModel& comp, DataContext& 
     inputBox.Add(calIcon);
   }
 
-  if(!boundPath.empty())
-  {
-    ctx.GetDataModel().Watch(boundPath,
-      [inputLabel, formatDateTime, kPlaceholder](const std::string&, const std::string& val) mutable {
-        inputLabel.SetText(Dali::String((val.empty() ? kPlaceholder : formatDateTime(val)).c_str()));
-        inputLabel.SetTextColor(val.empty() ? A2uiTheme::Color("OnSurfaceContainerLow") : COLOR_TEXT_DEFAULT);
-      });
-  }
+  // Re-evaluates the binding, so the update path formats exactly what the first paint did.
+  WatchBinding(valueNode, ctx,
+    [inputLabel, formatDateTime, kPlaceholder](const std::string& val) mutable {
+      inputLabel.SetText(Dali::String((val.empty() ? kPlaceholder : formatDateTime(val)).c_str()));
+      inputLabel.SetTextColor(val.empty() ? A2uiTheme::Color("OnSurfaceContainerLow") : COLOR_TEXT_DEFAULT);
+    });
 
   container.Add(inputBox);
 

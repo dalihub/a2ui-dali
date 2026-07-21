@@ -363,6 +363,38 @@ std::string A2uiRenderer::GetBoundPath(const TreeNode* propNode, const DataConte
   return ctx.Resolve(pathNode->GetString());
 }
 
+bool A2uiRenderer::WatchBinding(const TreeNode* propNode, DataContext& ctx,
+                                std::function<void(const std::string&)> apply) const
+{
+  if(!propNode || propNode->GetType() != TreeNode::OBJECT)
+  {
+    return false;
+  }
+
+  std::vector<std::string> deps;
+  mExprParser.CollectDependencyPaths(*propNode, ctx, deps);
+  if(deps.empty())
+  {
+    return false;
+  }
+
+  // The context is captured BY VALUE: a template row's ctx is a stack temporary in
+  // RenderTemplateChildren, but its scope ("/forecast/2") is what makes the row's
+  // relative paths resolve, so the callback needs its own copy. The DataModel it
+  // references owns the observer list, so it always outlives the callback.
+  DataContext         scope = ctx;
+  const A2uiRenderer* self  = this;
+  auto reevaluate = [self, propNode, scope, apply](const std::string&, const std::string&) mutable {
+    apply(self->ResolveString(propNode, scope));
+  };
+
+  for(const std::string& dep : deps)
+  {
+    ctx.GetDataModel().Watch(dep, reevaluate);
+  }
+  return true;
+}
+
 // ========================================================================
 // Helpers
 // ========================================================================

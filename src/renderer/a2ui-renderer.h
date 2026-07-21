@@ -141,6 +141,16 @@ private:
                            float fallback = 0.0f) const;
   std::string GetBoundPath(const Dali::Ui::Integration::TreeNode* propNode, const DataContext& ctx) const;
 
+  /// Keep a rendered property in sync with the data model.
+  ///
+  /// Watches every path @p propNode depends on and, when one changes, RE-EVALUATES the
+  /// whole binding and hands the result to @p apply. Re-evaluating (rather than passing
+  /// the raw value at the changed path) is what makes a FunctionCall binding work: the
+  /// visible value is `formatCurrency(...)`'s output, not the number the path holds.
+  /// @return true if the node is a binding with at least one dependency.
+  bool WatchBinding(const Dali::Ui::Integration::TreeNode* propNode, DataContext& ctx,
+                    std::function<void(const std::string& value)> apply) const;
+
   // === Property access helpers ===
   static const char* GetNodeString(const Dali::Ui::Integration::TreeNode& node, const char* key,
                                    const char* fallback = "");

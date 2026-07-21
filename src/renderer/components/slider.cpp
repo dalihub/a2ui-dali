@@ -86,10 +86,9 @@ View A2uiRenderer::RenderSlider(const ComponentModel& comp, DataContext& ctx)
   container.Add(trackRow);
 
   // Reactive: update the value label and the fill/empty split when the bound value changes.
-  if(!boundPath.empty())
   {
-    ctx.GetDataModel().Watch(boundPath,
-      [valueLabel, fillTrack, emptyTrack, minVal, maxVal](const std::string&, const std::string& val) mutable {
+    WatchBinding(valueNode, ctx,
+      [valueLabel, fillTrack, emptyTrack, minVal, maxVal](const std::string& val) mutable {
         valueLabel.SetText(Dali::String(val.c_str()));
         float v = 0.0f;
         try { v = std::stof(val); } catch(...) {}
