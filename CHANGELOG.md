@@ -5,6 +5,62 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Reactive data binding for FunctionCall properties.** A property rendered from a
+  `{"call": …}` binding never followed the data model. Where the arguments held a nested
+  `{"path": …}` the update wrote the **raw** value over the formatted one (`formatDate`
+  showed `2025-12-16` instead of `Tue`, `formatCurrency` `12458.32` instead of
+  `$12,458.32`); where the only inputs were `${…}` tokens inside a `formatString` template
+  no watch was registered at all and the property stayed frozen. Bindings now collect every
+  path they read — direct `path`, nested paths in `args`, and each `${…}` token — and
+  **re-evaluate the whole binding** when any of them changes, matching the first paint.
+  ([#14](https://github.com/dalihub/a2ui-dali/issues/14))
+- **Data-driven child lists now follow their array.** `children: {path, componentId}` was
+  filled once at render time, so a list whose array arrived in a later `updateDataModel`
+  (the weather card's forecast row) stayed permanently empty. The bound array is now
+  watched and the children rebuilt when its length changes; per-item value changes continue
+  to go through each item's own bindings, so rows are not thrown away on every update.
+- **`updateDataModel` at an array-item path no longer destroys the array.** A path like
+  `/forecast/1/temp` rewrote the parent list as an object (`{"0":…,"1":…}`), which read back
+  fine but left any data-driven list bound to it rendering nothing on the next render.
+  Writes now address an existing index or the JSON Pointer append slot (`-`, or
+  `index == length`); anything else is rejected and logged instead of reshaping the list.
+  A root-level array is handled too, and `ResolvePath` no longer reports an out-of-range
+  index as a hit (`/f/2` on a two-element list used to resolve to the array itself).
+
+- **Bound `Icon.name` follows the data.** It was resolved once, which already broke three
+  shipped payloads under a streaming feed: the music player lost its pause glyph, the stats
+  card both its trend icons, the shipping card its "out for delivery" truck.
+- **A bound `AudioPlayer.description` can appear at all.** An empty caption at first paint
+  returned the bare control, leaving no label for the value to arrive into.
+- **Validation rules that read another field re-evaluate.** `checks` watched only the
+  field's own value, so `required(/other)` kept its error on screen after `/other` was
+  filled in.
+- **Tap targets no longer accumulate across list rebuilds.** Each rebuild attached fresh
+  detectors while the old ones were kept for the life of the surface, holding views that
+  are no longer on screen.
+- **`ClearObservers()` called from inside a notification is deferred** to the end of the
+  pass instead of destroying the callback that is running and skipping the observers after
+  it.
+
+### Added
+
+- `a2ui-streaming-render-test` — an end-to-end test that drives the real renderer and
+  asserts on the real DALi view tree. Every case is fed message-by-message, as one string,
+  and as a batched file, and all three must agree; every shipped sample and gallery screen
+  is additionally rendered both ways and compared. `tools/run-tests.sh` runs it together
+  with the conformance test.
+- Core unit tests for the data model's array-write rules and observer bookkeeping, in
+  `a2ui-conformance-test` (no display needed).
+- `DataModel::UnwatchAll()` / `ObserverCount()` — retire exactly the watches a rebuilt
+  subtree registered, so repeated rebuilds cannot accumulate observers on dead views, and
+  make the count observable so a test can prove it. A nested list is covered: each
+  generation records its watches into every enclosing generation, so an outer rebuild also
+  retires what an inner rebuild registered after it.
+
 ## [0.12.0] — 2026-07-16
 
 Adds TV remote / D-pad focus support and folds in three rendering fixes. No a2ui-dali

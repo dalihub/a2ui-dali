@@ -110,6 +110,23 @@ public:
   void Unwatch(uint32_t observerId);
 
   /**
+   * Unregister a batch of observers at once.
+   *
+   * Rebuilding a subtree destroys its views; without retiring their watches the observers
+   * would live on, repainting detached actors and growing the list on every rebuild.
+   * Safe to call from inside a notification: registrations still queued for this pass are
+   * dropped too, which a deferred removal alone would miss (pending removals are applied
+   * before pending additions).
+   */
+  void UnwatchAll(const std::vector<uint32_t>& observerIds);
+
+  /**
+   * How many observers are currently registered (diagnostics — a rebuild that fails to
+   * retire its old watches shows up here as a count that keeps climbing).
+   */
+  size_t ObserverCount() const { return mObservers.size(); }
+
+  /**
    * Clear all data and observers.
    */
   void Clear();
@@ -140,6 +157,7 @@ private:
   std::vector<uint32_t>   mPendingRemoves;
   uint32_t                mNextObserverId = 1;
   bool                    mNotifying = false; // re-entrancy guard
+  bool                    mClearObserversPending = false; // ClearObservers() during a notify
 };
 
 } // namespace A2ui

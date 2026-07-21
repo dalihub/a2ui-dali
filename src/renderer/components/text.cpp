@@ -195,30 +195,28 @@ View A2uiRenderer::RenderText(const ComponentModel& comp, DataContext& ctx)
   // (Earlier this added 5-12px per element on top of the gap, doubling every vertical seam.)
   label.SetMargin(Extents(0, 0, 0, 0));
 
-  // Reactive data binding: if text is a data binding, watch for changes
+  // Reactive data binding: re-run the binding (path OR function call) on every change
+  // of anything it reads, so a streamed value lands here formatted exactly as it was on
+  // the first paint above.
   if(textNode && textNode->GetType() == TreeNode::OBJECT)
   {
-    std::string boundPath = GetBoundPath(textNode, ctx);
-    if(!boundPath.empty())
-    {
-      ctx.GetDataModel().Watch(boundPath, [label](const std::string&, const std::string& val) mutable {
-        // Strip markdown on update too, matching the initial paint (a streamed value may
-        // carry **bold** / "# " markers that would otherwise render literally).
-        std::string shown = StripMarkdown(val);
-        label.SetText(Dali::String(shown.c_str()));
-        // The multi-line / wrap decision was made at first paint from the (usually empty)
-        // initial value, so a data-bound label is single-line by default. Recompute it from the
-        // arrived value so a multi-word streamed value actually wraps — while a single unbroken
-        // token (a number/currency cell) still stays on one line, matching the initial-paint rule.
-        label.SetMultiLine(shown.find(' ') != std::string::npos);
-        // A value arriving AFTER the first layout settled cannot rely on LayoutFinishedSignal:
-        // SetText only re-runs measure when the height is WRAP_CONTENT, but this label's height
-        // is pinned to a concrete value, so the signal never re-fires and the row would keep its
-        // reserved (or collapsed) height, clipping/hiding the streamed text. Re-fit here — the
-        // height change itself invalidates measure and re-arranges the label at full height.
-        FitLabelHeightToLines(label, label.GetSize().width);
-      });
-    }
+    WatchBinding(textNode, ctx, [label](const std::string& val) mutable {
+      // Strip markdown on update too, matching the initial paint (a streamed value may
+      // carry **bold** / "# " markers that would otherwise render literally).
+      std::string shown = StripMarkdown(val);
+      label.SetText(Dali::String(shown.c_str()));
+      // The multi-line / wrap decision was made at first paint from the (usually empty)
+      // initial value, so a data-bound label is single-line by default. Recompute it from the
+      // arrived value so a multi-word streamed value actually wraps — while a single unbroken
+      // token (a number/currency cell) still stays on one line, matching the initial-paint rule.
+      label.SetMultiLine(shown.find(' ') != std::string::npos);
+      // A value arriving AFTER the first layout settled cannot rely on LayoutFinishedSignal:
+      // SetText only re-runs measure when the height is WRAP_CONTENT, but this label's height
+      // is pinned to a concrete value, so the signal never re-fires and the row would keep its
+      // reserved (or collapsed) height, clipping/hiding the streamed text. Re-fit here — the
+      // height change itself invalidates measure and re-arranges the label at full height.
+      FitLabelHeightToLines(label, label.GetSize().width);
+    });
   }
 
   return label;

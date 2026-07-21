@@ -15,6 +15,7 @@
 
 #include "expression-parser.h"
 #include <dali/integration-api/debug.h>
+#include <algorithm>
 #include <regex>
 #include <sstream>
 #include <cmath>
@@ -483,6 +484,63 @@ int ExpressionParser::GetArgInt(const TreeNode& args, const char* key, int fallb
   if(node->GetType() == TreeNode::INTEGER) return node->GetInteger();
   if(node->GetType() == TreeNode::FLOAT) return static_cast<int>(node->GetFloat());
   return fallback;
+}
+
+void ExpressionParser::CollectDependencyPaths(const TreeNode& node, const DataContext& ctx,
+                                              std::vector<std::string>& out) const
+{
+  auto add = [&out](std::string path) {
+    if(path.empty()) return;
+    if(std::find(out.begin(), out.end(), path) == out.end()) out.push_back(std::move(path));
+  };
+
+  if(node.GetType() == TreeNode::STRING)
+  {
+    // A formatString template. Take every "${" and read to the next '}': for a nested
+    // "${fn(value:${/b})}" that yields "fn(value:${/b" (a call — its own inner token is
+    // visited separately) and "/b" (the real dependency), mirroring how InterpolateString
+    // resolves innermost-first.
+    const char* raw = node.GetString();
+    std::string str = raw ? raw : "";
+    for(std::size_t pos = str.find("${"); pos != std::string::npos; pos = str.find("${", pos + 2))
+    {
+      std::size_t end = str.find('}', pos + 2);
+      if(end == std::string::npos) break;
+      std::string token = str.substr(pos + 2, end - pos - 2);
+
+      std::size_t b = token.find_first_not_of(" \t");
+      std::size_t e = token.find_last_not_of(" \t");
+      if(b == std::string::npos) continue;
+      token = token.substr(b, e - b + 1);
+
+      if(token[0] == '/')                                 // absolute path
+      {
+        add(ctx.Resolve(token));
+      }
+      else if(token.find('(') == std::string::npos)       // bare name → relative path
+      {
+        // ResolveInlineExpression tries the scoped path first and falls back to the
+        // root-level one, so both are dependencies.
+        add(ctx.Resolve(token));
+        add("/" + token);
+      }
+      // else: an inline function call — its arguments are separate "${…}" tokens.
+    }
+    return;
+  }
+
+  if(node.GetType() == TreeNode::OBJECT || node.GetType() == TreeNode::ARRAY)
+  {
+    const TreeNode* pathNode = node.GetChild("path");
+    if(pathNode && pathNode->GetType() == TreeNode::STRING)
+    {
+      add(ctx.Resolve(pathNode->GetString()));
+    }
+    for(auto it = node.CBegin(); it != node.CEnd(); ++it)
+    {
+      CollectDependencyPaths((*it).second, ctx, out);
+    }
+  }
 }
 
 std::string ExpressionParser::InterpolateString(const std::string& input, const DataContext& ctx) const

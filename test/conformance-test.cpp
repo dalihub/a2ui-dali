@@ -29,17 +29,20 @@
  */
 
 #include "../src/core/a2ui-message-processor.h"
+#include "../src/core/data-model.h"
 #include "../src/core/surface-model.h"
 
 #include <dali-ui-foundation/integration-api/builder/json-parser.h>
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 #include <cstdlib>
 
 using namespace A2ui;
+using Dali::Ui::Integration::TreeNode;
 
 // ========================================================================
 // Test Infrastructure
@@ -397,6 +400,160 @@ void TestDeleteSurface(const std::string& dataDir)
 }
 
 // ========================================================================
+// Test 7: DataModel — writes into arrays
+//
+// A list is addressed by index, and an update that cannot name a real slot must leave the
+// list alone. Getting this wrong is invisible when the value is read straight back (an
+// object with a "1" key answers /f/1 just fine) and only surfaces on the next render, when
+// a data-driven child list no longer finds an ARRAY.
+// ========================================================================
+
+void TestDataModelArrayWrites()
+{
+  std::cout << "\n=== Test: DataModel array writes ===" << std::endl;
+
+  auto fresh = [](const char* json) {
+    auto model = std::make_unique<DataModel>();
+    model->SetData("/", json);
+    return model;
+  };
+  auto isArray = [](DataModel& m, const char* path) {
+    const auto* node = m.ResolvePath(path);
+    return node && node->GetType() == TreeNode::ARRAY;
+  };
+
+  {
+    auto m = fresh(R"({"f":[{"t":"a"},{"t":"b"}]})");
+    ReportTest("array item write keeps the array", m->SetData("/f/1/t", "\"z\"") &&
+               isArray(*m, "/f") && m->GetString("/f/1/t") == "z" &&
+               m->GetString("/f/0/t") == "a");
+  }
+  {
+    auto m = fresh(R"({"f":[{"t":"a"}]})");
+    // index == length is the JSON Pointer append slot — the ordinary way a stream grows a list
+    ReportTest("append at index == length", m->SetData("/f/1/t", "\"b\"") &&
+               isArray(*m, "/f") && m->GetString("/f/0/t") == "a" &&
+               m->GetString("/f/1/t") == "b");
+  }
+  {
+    auto m = fresh(R"({"f":[{"t":"a"}]})");
+    ReportTest("append via the \"-\" token", m->SetData("/f/-/t", "\"b\"") &&
+               isArray(*m, "/f") && m->GetString("/f/1/t") == "b");
+  }
+  {
+    auto m = fresh(R"({"f":[]})");
+    ReportTest("first item into an empty array", m->SetData("/f/0/t", "\"a\"") &&
+               isArray(*m, "/f") && m->GetString("/f/0/t") == "a");
+  }
+  {
+    auto m = fresh(R"({"f":[{"t":"a"}]})");
+    bool rejected = !m->SetData("/f/7/t", "\"ghost\"");
+    ReportTest("index past the append slot is rejected",
+               rejected && isArray(*m, "/f") && m->GetString("/f/1/t").empty() &&
+               m->GetString("/f/0/t") == "a");
+  }
+  {
+    auto m = fresh(R"({"f":[{"t":"a"}]})");
+    bool rejected = !m->SetData("/f/name/t", "\"junk\"");
+    ReportTest("field name where an index belongs is rejected",
+               rejected && isArray(*m, "/f") && m->GetString("/f/0/t") == "a");
+  }
+  {
+    auto m = fresh(R"([{"n":"a"},{"n":"b"}])");
+    ReportTest("root-level array updates in place", m->SetData("/1/n", "\"z\"") &&
+               isArray(*m, "/") && m->GetString("/0/n") == "a" && m->GetString("/1/n") == "z");
+  }
+  {
+    auto m = fresh(R"({"f":[{"t":"a"},{"t":"b"}]})");
+    // Reporting an out-of-range index as a hit made "/f/2" resolve to the array itself.
+    ReportTest("out-of-range index resolves to nothing", m->ResolvePath("/f/2") == nullptr);
+  }
+  {
+    auto m = fresh(R"({"a":[{"b":[{"c":1},{"c":2}]}]})");
+    ReportTest("nested arrays", m->SetData("/a/0/b/1/c", "9") &&
+               isArray(*m, "/a") && isArray(*m, "/a/0/b") &&
+               m->GetString("/a/0/b/0/c") == "1" && m->GetString("/a/0/b/1/c") == "9");
+  }
+}
+
+// ========================================================================
+// Test 8: DataModel — observer bookkeeping
+//
+// The renderer rebuilds parts of the view tree from inside a notification, so registering,
+// retiring and clearing observers all have to behave while a notification is in flight.
+// ========================================================================
+
+void TestDataModelObservers()
+{
+  std::cout << "\n=== Test: DataModel observers ===" << std::endl;
+
+  {
+    DataModel model;
+    model.SetData("/", R"({"a":1,"b":2})");
+    uint32_t first  = model.Watch("/a", [](const std::string&, const std::string&) {});
+    uint32_t second = model.Watch("/b", [](const std::string&, const std::string&) {});
+    model.UnwatchAll({first, second});
+    ReportTest("UnwatchAll removes the listed observers", model.ObserverCount() == 0);
+  }
+  {
+    DataModel model;
+    model.SetData("/", R"({"a":1})");
+    int fired = 0;
+    model.Watch("/a", [&fired](const std::string&, const std::string&) { fired++; });
+    model.SetData("/a", "2");
+    ReportTest("a watch fires on its own path", fired == 1);
+  }
+  {
+    // Registering during a notification must not lose the new observer.
+    DataModel model;
+    model.SetData("/", R"({"a":1})");
+    bool added = false;
+    model.Watch("/a", [&model, &added](const std::string&, const std::string&) {
+      if(!added)
+      {
+        added = true;
+        model.Watch("/a", [](const std::string&, const std::string&) {});
+      }
+    });
+    model.SetData("/a", "2");
+    ReportTest("a watch registered during a notification survives", model.ObserverCount() == 2);
+  }
+  {
+    // Retiring during a notification must also drop registrations queued in the same pass —
+    // pending removals are applied first, so a deferred remove alone would miss them.
+    DataModel model;
+    model.SetData("/", R"({"a":1})");
+    std::vector<uint32_t> spawned;
+    model.Watch("/a", [&model, &spawned](const std::string&, const std::string&) {
+      if(!spawned.empty()) return;
+      spawned.push_back(model.Watch("/a", [](const std::string&, const std::string&) {}));
+      model.UnwatchAll(spawned);
+    });
+    model.SetData("/a", "2");
+    ReportTest("UnwatchAll during a notification drops queued registrations",
+               model.ObserverCount() == 1);
+  }
+  {
+    // A callback may trigger a full re-render, which clears every observer. Clearing the
+    // vector mid-loop would destroy the callback that is running AND silently skip the
+    // observers after it, so the clear is deferred to the end of the pass: the rest of this
+    // notification still runs, and only then does everything go.
+    DataModel model;
+    model.SetData("/", R"({"a":1})");
+    int later = 0;
+    model.Watch("/a", [&model](const std::string&, const std::string&) {
+      model.ClearObservers();
+    });
+    model.Watch("/a", [&later](const std::string&, const std::string&) { later++; });
+    model.SetData("/a", "2");
+    ReportTest("ClearObservers from inside a notification defers to the end of the pass",
+               later == 1 && model.ObserverCount() == 0,
+               "later fired " + std::to_string(later) + " times, " +
+               std::to_string(model.ObserverCount()) + " observers left");
+  }
+}
+
+// ========================================================================
 // Main
 // ========================================================================
 
@@ -421,6 +578,8 @@ int main(int argc, char** argv)
   TestDataBinding(dataDir);
   TestTheme(dataDir);
   TestDeleteSurface(dataDir);
+  TestDataModelArrayWrites();
+  TestDataModelObservers();
 
   // Summary
   std::cout << "\n========================================" << std::endl;

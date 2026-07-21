@@ -52,7 +52,9 @@ View A2uiRenderer::RenderDateTimeInput(const ComponentModel& comp, DataContext& 
     }
     return out;
   };
-  std::string raw = !boundPath.empty() ? ctx.GetDataModel().GetString(boundPath) : "";
+  // Resolve the binding, not the raw value at its path, so a FunctionCall-valued input
+  // paints the same string the watch below will hand it.
+  std::string raw = valueNode ? ResolveString(valueNode, ctx) : "";
   std::string displayText = raw.empty() ? kPlaceholder : formatDateTime(raw);
 
   Label inputLabel = Label::New(displayText.c_str());
@@ -79,14 +81,12 @@ View A2uiRenderer::RenderDateTimeInput(const ComponentModel& comp, DataContext& 
     inputBox.Add(calIcon);
   }
 
-  if(!boundPath.empty())
-  {
-    ctx.GetDataModel().Watch(boundPath,
-      [inputLabel, formatDateTime, kPlaceholder](const std::string&, const std::string& val) mutable {
-        inputLabel.SetText(Dali::String((val.empty() ? kPlaceholder : formatDateTime(val)).c_str()));
-        inputLabel.SetTextColor(val.empty() ? A2uiTheme::Color("OnSurfaceContainerLow") : COLOR_TEXT_DEFAULT);
-      });
-  }
+  // Re-evaluates the binding, so the update path formats exactly what the first paint did.
+  WatchBinding(valueNode, ctx,
+    [inputLabel, formatDateTime, kPlaceholder](const std::string& val) mutable {
+      inputLabel.SetText(Dali::String((val.empty() ? kPlaceholder : formatDateTime(val)).c_str()));
+      inputLabel.SetTextColor(val.empty() ? A2uiTheme::Color("OnSurfaceContainerLow") : COLOR_TEXT_DEFAULT);
+    });
 
   container.Add(inputBox);
 

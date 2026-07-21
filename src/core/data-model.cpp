@@ -240,16 +240,21 @@ const TreeNode* DataModel::ResolvePath(const std::string& path) const
       if(endPtr && *endPtr == '\0' && idx >= 0)
       {
         long count = 0;
+        bool found = false;
         for(auto it = current->CBegin(); it != current->CEnd(); ++it)
         {
           if(count == idx)
           {
             current = &(*it).second;
+            found = true;
             break;
           }
           count++;
         }
-        if(count == idx)
+        // Only a HIT continues. Testing `count == idx` here would also be true after a
+        // miss (count ends at the array's size), which resolved an out-of-range index to
+        // the array itself — so "/f/2" on a 2-element list looked like a valid node.
+        if(found)
         {
           continue;
         }
@@ -381,6 +386,35 @@ void DataModel::Unwatch(uint32_t observerId)
   }
 }
 
+void DataModel::UnwatchAll(const std::vector<uint32_t>& observerIds)
+{
+  if(observerIds.empty()) return;
+  auto listed = [&observerIds](uint32_t id) {
+    return std::find(observerIds.begin(), observerIds.end(), id) != observerIds.end();
+  };
+
+  if(mNotifying)
+  {
+    // Defer removal like Unwatch does — but also drop registrations still queued in
+    // mPendingAdds: those are not in mObservers yet, so a deferred remove would miss them
+    // (pending removes are applied before pending adds) and leak them.
+    for(const Observer& o : mObservers)
+    {
+      if(listed(o.id)) mPendingRemoves.push_back(o.id);
+    }
+    mPendingAdds.erase(
+      std::remove_if(mPendingAdds.begin(), mPendingAdds.end(),
+                     [&listed](const Observer& o) { return listed(o.id); }),
+      mPendingAdds.end());
+    return;
+  }
+
+  mObservers.erase(
+    std::remove_if(mObservers.begin(), mObservers.end(),
+                   [&listed](const Observer& o) { return listed(o.id); }),
+    mObservers.end());
+}
+
 static bool IsHierarchicalMatch(const std::string& a, const std::string& b)
 {
   // Check if 'a' is a hierarchical prefix of 'b'.
@@ -430,6 +464,18 @@ void DataModel::NotifyObservers(const std::string& changedPath)
 
   mNotifying = false;
 
+  // A callback asked for a wholesale clear (e.g. it triggered a full re-render). Doing it
+  // during the loop would have destroyed the std::function that was executing, so it was
+  // deferred to here.
+  if(mClearObserversPending)
+  {
+    mClearObserversPending = false;
+    mObservers.clear();
+    mPendingAdds.clear();
+    mPendingRemoves.clear();
+    return;
+  }
+
   // Apply deferred modifications
   for(auto id : mPendingRemoves)
   {
@@ -462,6 +508,13 @@ void DataModel::Clear()
 
 void DataModel::ClearObservers()
 {
+  // Never clear from inside a notification: the observer being invoked lives in mObservers,
+  // and destroying the vector would destroy the callback mid-call.
+  if(mNotifying)
+  {
+    mClearObserversPending = true;
+    return;
+  }
   mObservers.clear();
   mPendingAdds.clear();
   mPendingRemoves.clear();
@@ -537,10 +590,68 @@ bool DataModel::MergeAtPath(const std::string& path, const std::string& valueJso
     return false;
   }
 
+  // Place `valueJson` at `segment` inside an ARRAY node. A list slot is addressed by index
+  // or by the JSON Pointer append token "-"; anything else (a field name, a negative or
+  // sparse index) is a slot this array does not have. Rejecting those keeps the node an
+  // ARRAY — rewriting it as an object silently breaks every data-driven list bound to it.
+  auto writeIntoArray = [](const TreeNode& arrayNode, const std::string& segment,
+                           const std::string& valueJson, std::string& out) -> bool {
+    long size  = static_cast<long>(arrayNode.Size());
+    long index = -1;
+    if(segment == "-")
+    {
+      index = size; // append
+    }
+    else if(!segment.empty() && segment.size() <= 9 &&
+            segment.find_first_not_of("0123456789") == std::string::npos)
+    {
+      index = std::strtol(segment.c_str(), nullptr, 10);
+    }
+    if(index < 0 || index > size) return false;
+
+    std::ostringstream oss;
+    oss << "[";
+    long at = 0;
+    for(auto it = arrayNode.CBegin(); it != arrayNode.CEnd(); ++it, ++at)
+    {
+      if(at) oss << ",";
+      oss << ((at == index) ? valueJson : TreeNodeToJson((*it).second));
+    }
+    if(index == size) // the append slot
+    {
+      if(at) oss << ",";
+      oss << valueJson;
+    }
+    oss << "]";
+    out = oss.str();
+    return true;
+  };
+
   // For single-level paths, use the optimized approach
   if(segments.size() == 1)
   {
     const std::string& key = segments[0];
+
+    if(root->GetType() == TreeNode::ARRAY)
+    {
+      // The data model root is itself a list.
+      std::string updated;
+      if(!writeIntoArray(*root, key, valueJson, updated))
+      {
+        DALI_LOG_ERROR("[A2UI] DataModel: '%s' is not a slot of the root array\n", key.c_str());
+        return false;
+      }
+      mJsonString = updated;
+      mParser     = JsonParser::New();
+      if(!mParser.Parse(mJsonString))
+      {
+        DALI_LOG_ERROR("[A2UI] DataModel: MergeAtPath re-parse error\n");
+        mParser.Reset();
+        return false;
+      }
+      return true;
+    }
+
     std::ostringstream oss;
     oss << "{";
     bool first = true;
@@ -612,7 +723,19 @@ bool DataModel::MergeAtPath(const std::string& path, const std::string& valueJso
     }
     const TreeNode* intermediateNode = ResolvePath(intermediatePath);
 
-    if(intermediateNode && intermediateNode->GetType() == TreeNode::OBJECT)
+    if(intermediateNode && intermediateNode->GetType() == TreeNode::ARRAY)
+    {
+      // "/forecast/1/temp" — the parent is a LIST, so segments[i] addresses a slot, not a key.
+      std::string updated;
+      if(!writeIntoArray(*intermediateNode, segments[i], nestedValue, updated))
+      {
+        DALI_LOG_ERROR("[A2UI] DataModel: '%s' is not a slot of the array at '%s'\n",
+                       segments[i].c_str(), intermediatePath.c_str());
+        return false;
+      }
+      nestedValue = updated;
+    }
+    else if(intermediateNode && intermediateNode->GetType() == TreeNode::OBJECT)
     {
       // Merge into existing object
       std::ostringstream oss;

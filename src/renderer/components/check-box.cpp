@@ -54,13 +54,14 @@ View A2uiRenderer::RenderCheckBox(const ComponentModel& comp, DataContext& ctx)
         return true;
       });
 
-    // Watch for data changes → update icon
-    ctx.GetDataModel().Watch(boundPath,
-      [checkIcon](const std::string&, const std::string& val) mutable {
-        bool on = (val == "true");
-        checkIcon.SetBackgroundColor(on ? COLOR_CHECK_ON : COLOR_CARD_BG);
-      });
   }
+
+  // Watch for data changes → update icon. Re-evaluates the binding, so a checkbox bound to
+  // a predicate call ({"call":"not", …}) tracks the call's result, not the raw path value.
+  WatchBinding(valueNode, ctx, [checkIcon](const std::string& val) mutable {
+    bool on = (val == "true");
+    checkIcon.SetBackgroundColor(on ? COLOR_CHECK_ON : COLOR_CARD_BG);
+  });
 
   return row;
 }

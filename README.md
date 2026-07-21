@@ -152,7 +152,11 @@ matter:
 {"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/name","value":"Ada"}}
 ```
 
-`JsonFeedFile(path)` reads an entire file and feeds it the same way.
+`JsonFeedFile(path)` reads an entire file and feeds it as one batch: every message is
+processed first and the surface is rendered **once** at the end, so a whole-file payload
+paints with its data already in place. `JsonFeed()` renders as the messages arrive — a
+later `updateDataModel` updates the views that are already on screen. Both produce the
+same result; the file form just avoids an intermediate paint.
 
 ### Message types (A2UI v0.9)
 
@@ -310,13 +314,27 @@ pkg-config --cflags --libs a2ui-dali
 | `examples/samples/`           | Ready-to-run v0.9 message streams (login form, music player, account balance) |
 | `examples/a2a-integration/`   | Wiring `JsonFeed` / actions to an [A2A](https://a2a-protocol.org) transport |
 
-## Conformance
-
-`a2ui-conformance-test` exercises the parser and model layers against the JSONL fixtures
-in `test/` and needs no DALi UI initialization, so it is suitable for headless CI:
+## Tests
 
 ```bash
-./bin/a2ui-conformance-test test/
+tools/run-tests.sh      # runs both suites below
+```
+
+| Suite | What it covers | Display |
+|-------|----------------|---------|
+| `a2ui-conformance-test` | Parser and model layers against the JSONL fixtures in `test/` | none — headless CI |
+| `a2ui-streaming-render-test` | Drives the real renderer and asserts on the real DALi view tree | Xvfb (the script wraps it) |
+
+The streaming test feeds each case in `test/e2e/` three ways — message by message, as one
+string, and as a batched file — and requires all three to render the same text, which is
+what keeps reactive data binding honest: a value arriving in a later `updateDataModel`
+must reach the views that are already on screen. It also renders every shipped sample and
+gallery screen both ways and compares them, so a regression in the streaming path shows up
+without hand-written expectations.
+
+```bash
+./bin/a2ui-conformance-test test/                        # parser/model only
+xvfb-run ./bin/a2ui-streaming-render-test .              # renderer, from the repo root
 ```
 
 ## Contributing

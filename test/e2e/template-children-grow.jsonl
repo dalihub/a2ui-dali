@@ -1,0 +1,4 @@
+{"version":"v0.9","createSurface":{"surfaceId":"tg","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"tg","value":{"items":[{"label":"a"},{"label":"b"}]}}}
+{"version":"v0.9","updateComponents":{"surfaceId":"tg","components":[{"id":"root","component":"Card","child":"list"},{"id":"list","component":"List","children":{"path":"/items","componentId":"row"}},{"id":"row","component":"Column","children":["cell"]},{"id":"cell","component":"Text","text":{"path":"label"}}]}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"tg","path":"/items","value":[{"label":"a"},{"label":"b"},{"label":"c"}]}}

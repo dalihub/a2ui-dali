@@ -106,7 +106,7 @@ View A2uiRenderer::RenderCard(const ComponentModel& comp,
         Dali::Actor, const Dali::TapGesture&) mutable {
         mActionDispatcher.Dispatch(*actionNode, sourceId, capturedCtx);
       });
-    mTapDetectors.push_back(detector);
+    RetainTapDetector(detector);
 
     // TV remote: a clickable card is a focus target too; OK/Enter runs the same action.
     EnableKeyActivation(card, [this, actionNode, sourceId, capturedCtx]() {

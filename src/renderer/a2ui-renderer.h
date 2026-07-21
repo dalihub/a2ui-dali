@@ -53,6 +53,10 @@ public:
    */
   Dali::Ui::View Render(SurfaceModel& surface);
 
+  /// How many tap targets the renderer is holding alive (diagnostics — a list that rebuilds
+  /// without releasing its old detectors shows up here as a count that keeps climbing).
+  size_t GetTapDetectorCount() const { return mTapDetectors.size(); }
+
   ActionDispatcher& GetActionDispatcher() { return mActionDispatcher; }
   DiffEngine& GetDiffEngine() { return mDiffEngine; }
   ViewPool& GetViewPool() { return mViewPool; }
@@ -121,6 +125,20 @@ private:
                               DataContext& ctx, Dali::Ui::View outContainer,
                               bool isRow, float gap);
 
+  /// Fill @p container with one @p templateId instance per element of the array at
+  /// @p arrayPath, and KEEP IT IN SYNC: the array usually arrives in an updateDataModel
+  /// after the components, so a one-shot fill leaves the list permanently empty.
+  ///
+  /// Rebuilds only when the array's LENGTH changes — a changed field inside an item is
+  /// already handled by that item's own bindings, and rebuilding on every keystroke would
+  /// throw away the rows (and their input state) the user is looking at.
+  ///
+  /// @param[in] prepareItem Per-item layout setup (flex sizing, gap), given the item and index
+  void BuildTemplateChildren(const std::string& templateId, const std::string& arrayPath,
+                             const SurfaceComponentsModel& components, DataContext& ctx,
+                             Dali::Ui::View container,
+                             std::function<void(Dali::Ui::View item, int index)> prepareItem);
+
   // === Remote / keyboard focus ===
   /// Make @p view reachable by the TV remote: mark it keyboard-focusable so the
   /// FocusManager can move focus onto it, and run @p onActivate when the focused
@@ -140,6 +158,42 @@ private:
   float       ResolveFloat(const Dali::Ui::Integration::TreeNode* propNode, const DataContext& ctx,
                            float fallback = 0.0f) const;
   std::string GetBoundPath(const Dali::Ui::Integration::TreeNode* propNode, const DataContext& ctx) const;
+
+  /// Observers registered while a template generation is being built.
+  ///
+  /// A generation must be able to retire exactly the watches it created. An id RANGE is not
+  /// enough: a NESTED list rebuilds itself later, registering ids outside its parent's
+  /// range, and those would survive the parent's rebuild and keep repainting detached views.
+  /// So each scope records into itself AND into every enclosing scope.
+  struct WatchScope
+  {
+    std::vector<uint32_t>                 ids;
+    std::vector<Dali::TapGestureDetector> tapDetectors; ///< released with the generation
+    std::shared_ptr<WatchScope>           parent;
+  };
+  /// The generation currently being built (null outside BuildTemplateChildren).
+  std::shared_ptr<WatchScope> mWatchScope;
+
+  /// Watch @p path, recording the observer in the active generation (if any).
+  void RecordWatch(DataModel& model, const std::string& path, DataChangeCallback cb) const;
+
+  /// Keep @p detector alive for as long as the view it was attached to. Inside a template
+  /// generation that is the generation's lifetime, not the whole surface's — otherwise a
+  /// list that rebuilds keeps a detector per item per rebuild, each holding a dead view.
+  void RetainTapDetector(Dali::TapGestureDetector detector);
+
+  /// Drop @p detectors from the retained set (their views are gone).
+  void ReleaseTapDetectors(const std::vector<Dali::TapGestureDetector>& detectors);
+
+  /// Keep a rendered property in sync with the data model.
+  ///
+  /// Watches every path @p propNode depends on and, when one changes, RE-EVALUATES the
+  /// whole binding and hands the result to @p apply. Re-evaluating (rather than passing
+  /// the raw value at the changed path) is what makes a FunctionCall binding work: the
+  /// visible value is `formatCurrency(...)`'s output, not the number the path holds.
+  /// @return true if the node is a binding with at least one dependency.
+  bool WatchBinding(const Dali::Ui::Integration::TreeNode* propNode, DataContext& ctx,
+                    std::function<void(const std::string& value)> apply) const;
 
   // === Property access helpers ===
   static const char* GetNodeString(const Dali::Ui::Integration::TreeNode& node, const char* key,

@@ -58,7 +58,7 @@ View A2uiRenderer::RenderModal(const ComponentModel& comp,
     closeDet.Attach(closeRow);
     closeDet.DetectedSignal().Connect(this,
       [closeModal](Dali::Actor, const Dali::TapGesture&) mutable { closeModal(); });
-    mTapDetectors.push_back(closeDet);
+    RetainTapDetector(closeDet);
 
     // TV remote: the close (X) row is a focus target; OK/Enter closes the modal.
     EnableKeyActivation(closeRow, [closeModal]() mutable { closeModal(); });
@@ -95,7 +95,7 @@ View A2uiRenderer::RenderModal(const ComponentModel& comp,
       openDet.Attach(triggerView);
       openDet.DetectedSignal().Connect(this,
         [openModal](Dali::Actor, const Dali::TapGesture&) mutable { openModal(); });
-      mTapDetectors.push_back(openDet);
+      RetainTapDetector(openDet);
 
       // TV remote: focus the trigger; OK/Enter opens the modal.
       EnableKeyActivation(triggerView, [openModal]() mutable { openModal(); });

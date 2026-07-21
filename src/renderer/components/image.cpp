@@ -197,9 +197,7 @@ View A2uiRenderer::RenderImage(const ComponentModel& comp, DataContext& ctx)
   // updateComponents, before the updateDataModel that carries the url. Wrap the image in a
   // stable container and rebuild it when the bound value arrives (a one-shot placeholder
   // can't self-replace).
-  std::string boundPath = (urlNode && urlNode->GetType() == TreeNode::OBJECT)
-                          ? GetBoundPath(urlNode, ctx) : std::string();
-  if(!boundPath.empty())
+  if(urlNode && urlNode->GetType() == TreeNode::OBJECT)
   {
     // A FlexLayout (not a plain View): a plain View does NOT lay out its child by the child's
     // RequestedWidth/Height, so a data-bound AVATAR's inner ImageView fell back to a tiny natural
@@ -220,8 +218,8 @@ View A2uiRenderer::RenderImage(const ComponentModel& comp, DataContext& ctx)
     if(!isHeader && !fullWidth) container.SetLayoutParams(FlexLayoutParams::New().SetAlignSelf(FlexAlign::CENTER));
     container.Add(buildView(resolvePath(url)));
     bool capFull = fullWidth;
-    ctx.GetDataModel().Watch(boundPath,
-      [container, buildView, resolvePath, fullWidthHeight, capFull](const std::string&, const std::string& val) mutable {
+    WatchBinding(urlNode, ctx,
+      [container, buildView, resolvePath, fullWidthHeight, capFull](const std::string& val) mutable {
         while(container.GetChildCount() > 0) container.Remove(container.GetChildAt(0u));
         if(capFull) container.SetRequestedHeight(fullWidthHeight(resolvePath(val)));
         container.Add(buildView(resolvePath(val)));

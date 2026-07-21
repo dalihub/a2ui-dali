@@ -128,8 +128,10 @@ View A2uiRenderer::Render(SurfaceModel& surface)
     return View();
   }
 
-  // Clear previous observers (from previous render)
+  // Clear previous observers (from previous render). The per-generation bookkeeping goes
+  // with them — a full render starts outside any template generation.
   surface.GetDataModel().ClearObservers();
+  mWatchScope.reset();
 
   // Release tap detectors from the previous render. The new view tree will
   // attach fresh detectors for its own Button / Card tap targets.
@@ -281,8 +283,24 @@ void A2uiRenderer::SetupChecks(const ComponentModel& comp, DataContext& ctx,
   };
 
   evaluate();  // evaluate once at load time (web parity: empty required → error now)
-  ctx.GetDataModel().Watch(boundPath,
-    [evaluate](const std::string&, const std::string&) mutable { evaluate(); });
+
+  // Re-evaluate when ANY path a condition reads changes — not just this field's own value.
+  // A rule can be about another field ("required(/other)"), and watching only boundPath left
+  // such an error on screen after the other field was filled in.
+  std::vector<std::string> deps;
+  if(!boundPath.empty()) deps.push_back(boundPath);
+  for(auto it = checksNode->CBegin(); it != checksNode->CEnd(); ++it)
+  {
+    if(const TreeNode* condition = (*it).second.Find("condition"))
+    {
+      mExprParser.CollectDependencyPaths(*condition, ctx, deps);
+    }
+  }
+  for(const std::string& dep : deps)
+  {
+    RecordWatch(ctx.GetDataModel(), dep,
+                [evaluate](const std::string&, const std::string&) mutable { evaluate(); });
+  }
 }
 
 // ========================================================================
@@ -361,6 +379,128 @@ std::string A2uiRenderer::GetBoundPath(const TreeNode* propNode, const DataConte
     return "";
   }
   return ctx.Resolve(pathNode->GetString());
+}
+
+void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
+                                         const std::string& arrayPath,
+                                         const SurfaceComponentsModel& components,
+                                         DataContext& ctx, View container,
+                                         std::function<void(View, int)> prepareItem)
+{
+  // Captured by value / by pointer: the callback outlives this call. The components model
+  // and the DataModel both live in the SurfaceModel, and replacing either one goes through
+  // a full re-render, which clears the observer this installs.
+  const SurfaceComponentsModel* comps = &components;
+  DataContext                   scope = ctx;
+  A2uiRenderer*                 self  = this;
+
+  // This generation's watches, linked to the generation that created this container so an
+  // outer rebuild also retires everything built beneath it.
+  auto own    = std::make_shared<WatchScope>();
+  own->parent = mWatchScope;
+  auto rendered = std::make_shared<int>(-1);
+
+  auto build = [self, templateId, arrayPath, comps, scope, container, prepareItem,
+                own, rendered]() mutable {
+    DataModel&      model = scope.GetDataModel();
+    const TreeNode* array = model.ResolvePath(arrayPath);
+    int             count = (array && array->GetType() == TreeNode::ARRAY)
+                              ? static_cast<int>(array->Size()) : 0;
+    if(count == *rendered) return; // same length — each item's own bindings keep it current
+
+    model.UnwatchAll(own->ids);
+    own->ids.clear();
+    // The views these were attached to are about to go away; without this a list that
+    // rebuilds keeps one detector per item per rebuild, each holding a dead view alive.
+    self->ReleaseTapDetectors(own->tapDetectors);
+    own->tapDetectors.clear();
+    while(container.GetChildViewCount() > 0)
+    {
+      container.Remove(container.GetChildViewAt(0));
+    }
+
+    // "/" + index, not arrayPath + "/" + index — a root-level array would otherwise scope
+    // its items to "//0", and "//0/name" never matches the "/0/name" an update notifies.
+    const std::string base = (arrayPath == "/") ? std::string() : arrayPath;
+
+    std::shared_ptr<WatchScope> saved = self->mWatchScope;
+    self->mWatchScope                 = own; // items register into this generation
+    for(int i = 0; i < count; ++i)
+    {
+      DataContext itemCtx = scope.CreateChildContext(base + "/" + std::to_string(i));
+      View        item    = self->RenderComponent(templateId, *comps, itemCtx);
+      if(item)
+      {
+        prepareItem(item, i);
+        container.Add(item);
+      }
+    }
+    self->mWatchScope = saved;
+    *rendered         = count;
+  };
+
+  build(); // first paint — usually empty, the array arrives in a later updateDataModel
+  // Recorded in the ENCLOSING generation: this container is one of its children.
+  RecordWatch(ctx.GetDataModel(), arrayPath,
+              [build](const std::string&, const std::string&) mutable { build(); });
+}
+
+void A2uiRenderer::RetainTapDetector(Dali::TapGestureDetector detector)
+{
+  mTapDetectors.push_back(detector);
+  // Inside a template generation, also note it so the generation's rebuild can drop it.
+  if(mWatchScope) mWatchScope->tapDetectors.push_back(detector);
+}
+
+void A2uiRenderer::ReleaseTapDetectors(const std::vector<Dali::TapGestureDetector>& detectors)
+{
+  for(const Dali::TapGestureDetector& gone : detectors)
+  {
+    mTapDetectors.erase(std::remove(mTapDetectors.begin(), mTapDetectors.end(), gone),
+                        mTapDetectors.end());
+  }
+}
+
+void A2uiRenderer::RecordWatch(DataModel& model, const std::string& path,
+                               DataChangeCallback cb) const
+{
+  uint32_t id = model.Watch(path, std::move(cb));
+  for(WatchScope* s = mWatchScope.get(); s; s = s->parent.get())
+  {
+    s->ids.push_back(id);
+  }
+}
+
+bool A2uiRenderer::WatchBinding(const TreeNode* propNode, DataContext& ctx,
+                                std::function<void(const std::string&)> apply) const
+{
+  if(!propNode || propNode->GetType() != TreeNode::OBJECT)
+  {
+    return false;
+  }
+
+  std::vector<std::string> deps;
+  mExprParser.CollectDependencyPaths(*propNode, ctx, deps);
+  if(deps.empty())
+  {
+    return false;
+  }
+
+  // The context is captured BY VALUE: a template row's ctx is a stack temporary in
+  // RenderTemplateChildren, but its scope ("/forecast/2") is what makes the row's
+  // relative paths resolve, so the callback needs its own copy. The DataModel it
+  // references owns the observer list, so it always outlives the callback.
+  DataContext         scope = ctx;
+  const A2uiRenderer* self  = this;
+  auto reevaluate = [self, propNode, scope, apply](const std::string&, const std::string&) mutable {
+    apply(self->ResolveString(propNode, scope));
+  };
+
+  for(const std::string& dep : deps)
+  {
+    RecordWatch(ctx.GetDataModel(), dep, reevaluate);
+  }
+  return true;
 }
 
 // ========================================================================

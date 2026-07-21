@@ -150,6 +150,19 @@ SET_TARGET_PROPERTIES(${TEST_NAME} PROPERTIES
 )
 
 # ============================================================
+# Streaming render test: drives the real renderer, needs a display
+# (run via tools/run-tests.sh, which wraps it in Xvfb)
+# ============================================================
+SET(RENDER_TEST_NAME a2ui-streaming-render-test)
+ADD_EXECUTABLE(${RENDER_TEST_NAME} test/streaming-render-test.cpp)
+
+TARGET_LINK_LIBRARIES(${RENDER_TEST_NAME} a2ui-dali)
+
+SET_TARGET_PROPERTIES(${RENDER_TEST_NAME} PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+)
+
+# ============================================================
 # Example: examples/basic-renderer
 # ============================================================
 SET(EXAMPLE_NAME a2ui-basic-renderer)

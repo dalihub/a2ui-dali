@@ -1,0 +1,5 @@
+{"version":"v0.9","createSurface":{"surfaceId":"ii","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}}
+{"version":"v0.9","updateComponents":{"surfaceId":"ii","components":[{"id":"root","component":"Card","child":"col"},{"id":"col","component":"Column","children":["pic","glyph"]},{"id":"pic","component":"Image","url":{"call":"formatString","args":{"value":"sample-images/${/photo}.jpg"},"returnType":"string"}},{"id":"glyph","component":"Icon","name":{"path":"/icon"}}]}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"ii","value":{"photo":"026c95714a4a","icon":"check"}}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"ii","path":"/photo","value":"092f80161d74"}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"ii","path":"/icon","value":"close"}}

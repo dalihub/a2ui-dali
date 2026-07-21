@@ -1,0 +1,4 @@
+{"version":"v0.9","createSurface":{"surfaceId":"tu","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"tu","value":{"forecast":[{"date":"2025-12-16","temp":74},{"date":"2025-12-17","temp":76}]}}}
+{"version":"v0.9","updateComponents":{"surfaceId":"tu","components":[{"id":"root","component":"Card","child":"row"},{"id":"row","component":"Row","children":{"path":"/forecast","componentId":"day"}},{"id":"day","component":"Column","children":["d-name","d-temp"]},{"id":"d-name","component":"Text","text":{"call":"formatDate","args":{"value":{"path":"date"},"format":"E"},"returnType":"string"}},{"id":"d-temp","component":"Text","text":{"call":"formatString","args":{"value":"${temp}deg"},"returnType":"string"}}]}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"tu","path":"/forecast/1/temp","value":99}}
