@@ -145,7 +145,7 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
           Dali::Actor, const Dali::TapGesture&) mutable {
           mActionDispatcher.Dispatch(*actionNode, compId, capturedCtx);
         });
-      mTapDetectors.push_back(detector);
+      RetainTapDetector(detector);
 
       // TV remote: make the button focusable and dispatch the same action on OK/Enter.
       EnableKeyActivation(button, [this, actionNode, compId, capturedCtx]() {

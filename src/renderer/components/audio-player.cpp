@@ -54,7 +54,11 @@ View A2uiRenderer::RenderAudioPlayer(const ComponentModel& comp, DataContext& ct
   // entirely. Resolve it (it's usually a data binding) and stack it over the bar in a Column.
   const TreeNode* descNode = comp.rawNode ? comp.rawNode->Find("description") : nullptr;
   std::string desc = descNode ? ResolveString(descNode, ctx) : "";
-  if(desc.empty()) return bar;
+  // A BOUND description is normally empty at this point — its value arrives in a later
+  // updateDataModel. Returning the bare bar here would leave no label to fill in, so the
+  // caption could never appear. Only an absent/literal-empty description skips it.
+  bool dataBound = descNode && descNode->GetType() == TreeNode::OBJECT;
+  if(desc.empty() && !dataBound) return bar;
 
   FlexLayout col = FlexLayout::New();
   col.SetDirection(FlexDirection::COLUMN);
@@ -67,6 +71,10 @@ View A2uiRenderer::RenderAudioPlayer(const ComponentModel& comp, DataContext& ct
   descLabel.SetMultiLine(true);
   descLabel.SetRequestedHeight(Metrics::LineHeight(Metrics::FontCaption()));
   descLabel.SetMargin(Extents(0, 0, 0, static_cast<uint16_t>(Metrics::Dp(6))));
+  WatchBinding(descNode, ctx, [descLabel](const std::string& value) mutable {
+    descLabel.SetText(Dali::String(value.c_str()));
+  });
+
   col.Add(descLabel);
   col.Add(bar);
   return col;

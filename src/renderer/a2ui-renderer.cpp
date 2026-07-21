@@ -283,8 +283,24 @@ void A2uiRenderer::SetupChecks(const ComponentModel& comp, DataContext& ctx,
   };
 
   evaluate();  // evaluate once at load time (web parity: empty required → error now)
-  ctx.GetDataModel().Watch(boundPath,
-    [evaluate](const std::string&, const std::string&) mutable { evaluate(); });
+
+  // Re-evaluate when ANY path a condition reads changes — not just this field's own value.
+  // A rule can be about another field ("required(/other)"), and watching only boundPath left
+  // such an error on screen after the other field was filled in.
+  std::vector<std::string> deps;
+  if(!boundPath.empty()) deps.push_back(boundPath);
+  for(auto it = checksNode->CBegin(); it != checksNode->CEnd(); ++it)
+  {
+    if(const TreeNode* condition = (*it).second.Find("condition"))
+    {
+      mExprParser.CollectDependencyPaths(*condition, ctx, deps);
+    }
+  }
+  for(const std::string& dep : deps)
+  {
+    RecordWatch(ctx.GetDataModel(), dep,
+                [evaluate](const std::string&, const std::string&) mutable { evaluate(); });
+  }
 }
 
 // ========================================================================
@@ -394,6 +410,10 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
 
     model.UnwatchAll(own->ids);
     own->ids.clear();
+    // The views these were attached to are about to go away; without this a list that
+    // rebuilds keeps one detector per item per rebuild, each holding a dead view alive.
+    self->ReleaseTapDetectors(own->tapDetectors);
+    own->tapDetectors.clear();
     while(container.GetChildViewCount() > 0)
     {
       container.Remove(container.GetChildViewAt(0));
@@ -423,6 +443,22 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
   // Recorded in the ENCLOSING generation: this container is one of its children.
   RecordWatch(ctx.GetDataModel(), arrayPath,
               [build](const std::string&, const std::string&) mutable { build(); });
+}
+
+void A2uiRenderer::RetainTapDetector(Dali::TapGestureDetector detector)
+{
+  mTapDetectors.push_back(detector);
+  // Inside a template generation, also note it so the generation's rebuild can drop it.
+  if(mWatchScope) mWatchScope->tapDetectors.push_back(detector);
+}
+
+void A2uiRenderer::ReleaseTapDetectors(const std::vector<Dali::TapGestureDetector>& detectors)
+{
+  for(const Dali::TapGestureDetector& gone : detectors)
+  {
+    mTapDetectors.erase(std::remove(mTapDetectors.begin(), mTapDetectors.end(), gone),
+                        mTapDetectors.end());
+  }
 }
 
 void A2uiRenderer::RecordWatch(DataModel& model, const std::string& path,

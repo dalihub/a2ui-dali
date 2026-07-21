@@ -1,0 +1,4 @@
+{"version":"v0.9","createSurface":{"surfaceId":"ca","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}}
+{"version":"v0.9","updateComponents":{"surfaceId":"ca","components":[{"id":"root","component":"Card","child":"col"},{"id":"col","component":"Column","children":["audio","field"]},{"id":"audio","component":"AudioPlayer","description":{"path":"/track"}},{"id":"field","component":"TextField","label":"Confirm","value":{"path":"/confirm"},"checks":[{"condition":{"call":"required","args":{"value":{"path":"/other"}}},"message":"other is required"}]}]}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"ca","value":{"track":"The Future of AI","confirm":"yes","other":""}}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"ca","path":"/other","value":"filled"}}

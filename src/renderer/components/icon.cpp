@@ -7,8 +7,10 @@ View A2uiRenderer::RenderIcon(const ComponentModel& comp, DataContext& ctx)
 {
   if(!comp.rawNode) return View::New();
 
-  // Name may be a literal string or a {path} data binding (e.g. statsCard icon comes
-  // from the data model) — resolve through the data context so both work.
+  // Name may be a literal string or a {path}/{call} data binding (e.g. the statsCard trend
+  // arrow and the shipping-status step glyphs come from the data model) — resolve through
+  // the data context so both work, and keep following it (the value usually arrives in a
+  // later updateDataModel, after this view is on screen).
   const TreeNode* nameNode = comp.rawNode->Find("name");
   std::string name = nameNode ? ResolveString(nameNode, ctx) : "";
   // Inline icons (the bullet glyph beside a contact phone/email row, a status check, a
@@ -28,27 +30,32 @@ View A2uiRenderer::RenderIcon(const ComponentModel& comp, DataContext& ctx)
   const char* color = GetNodeString(*comp.rawNode, "color", "");
   if(color[0] != '\0') tint = ParseHexColor(color);
 
-  std::string iconPath = mImageDir + "icons/" + name + ".png";
-  std::ifstream testFile(iconPath);
-  if(testFile.is_open())
-  {
-    testFile.close();
-    ImageView icon = ImageView::New(iconPath.c_str());
-    // dp-scale the size — every other component sizes via Metrics::Dp(), but this used the raw
-    // logical value, so at the 2x capture DPI every icon rendered at HALF its intended size and
-    // read as a faint tiny speck next to the (dp-scaled) text (the contact bullets, header
-    // payment/run/calendar/star glyphs, the trend arrow). dp-scaling matches the web glyph size.
-    icon.SetRequestedWidth(Metrics::Dp(size));
-    icon.SetRequestedHeight(Metrics::Dp(size));
-    icon.SetImageColor(tint);
-    return icon;
-  }
+  // An unknown (or not-yet-arrived) icon name resolves to no url: the view keeps its box, so
+  // the layout holds and the glyph simply appears once the name is known — instead of the
+  // jarring solid grey square a missing image would draw.
+  auto resolveIcon = [this](const std::string& iconName) -> std::string {
+    if(iconName.empty()) return std::string();
+    std::string iconPath = mImageDir + "icons/" + iconName + ".png";
+    std::ifstream testFile(iconPath);
+    return testFile.is_open() ? iconPath : std::string();
+  };
 
-  // Graceful fallback for an unknown icon name: a transparent box of the right size
-  // (keeps layout) instead of a jarring solid grey square.
-  View fallback = View::New();
-  fallback.SetRequestedWidth(Metrics::Dp(size));
-  fallback.SetRequestedHeight(Metrics::Dp(size));
-  return fallback;
+  ImageView icon = ImageView::New();
+  // dp-scale the size — every other component sizes via Metrics::Dp(), but this used the raw
+  // logical value, so at the 2x capture DPI every icon rendered at HALF its intended size and
+  // read as a faint tiny speck next to the (dp-scaled) text (the contact bullets, header
+  // payment/run/calendar/star glyphs, the trend arrow). dp-scaling matches the web glyph size.
+  icon.SetRequestedWidth(Metrics::Dp(size));
+  icon.SetRequestedHeight(Metrics::Dp(size));
+  icon.SetImageColor(tint);
+
+  std::string resolved = resolveIcon(name);
+  if(!resolved.empty()) icon.SetResourceUrl(Dali::String(resolved.c_str()));
+
+  WatchBinding(nameNode, ctx, [icon, resolveIcon](const std::string& value) mutable {
+    icon.SetResourceUrl(Dali::String(resolveIcon(value).c_str()));
+  });
+
+  return icon;
 }
 } // namespace A2ui

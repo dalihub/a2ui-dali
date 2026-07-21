@@ -107,7 +107,7 @@ View A2uiRenderer::RenderTabs(const ComponentModel& comp,
       det.Attach(tabBtn);
       det.DetectedSignal().Connect(this,
         [selectTab](Dali::Actor, const Dali::TapGesture&) mutable { selectTab(); });
-      mTapDetectors.push_back(det);
+      RetainTapDetector(det);
 
       // TV remote: focus the tab button; OK/Enter selects it.
       EnableKeyActivation(tabBtn, [selectTab]() mutable { selectTab(); });

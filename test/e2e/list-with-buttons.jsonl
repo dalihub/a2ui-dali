@@ -1,0 +1,5 @@
+{"version":"v0.9","createSurface":{"surfaceId":"lb","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"lb","value":{"rows":[{"name":"one"}]}}}
+{"version":"v0.9","updateComponents":{"surfaceId":"lb","components":[{"id":"root","component":"Card","child":"list"},{"id":"list","component":"List","children":{"path":"/rows","componentId":"item"}},{"id":"item","component":"Column","children":["btn"]},{"id":"btn","component":"Button","child":"btn-text","action":{"event":{"name":"pick"}}},{"id":"btn-text","component":"Text","text":{"path":"name"}}]}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"lb","path":"/rows","value":[{"name":"one"},{"name":"two"}]}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"lb","path":"/rows","value":[{"name":"one"},{"name":"two"},{"name":"three"}]}}

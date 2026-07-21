@@ -43,6 +43,7 @@
 #include <dali/public-api/adaptor-framework/window-data.h>
 #include <dali/public-api/math/rect.h>
 #include <dali-ui-foundation/dali-ui-foundation.h>
+#include <dali-ui-foundation/public-api/views/image/image-view.h>
 #include <dali-ui-foundation/public-api/views/text-controls/label.h>
 
 #include <algorithm>
@@ -53,6 +54,7 @@
 #include <string>
 #include <vector>
 
+using Dali::Ui::ImageView;
 using Dali::Ui::Label;
 using Dali::Ui::View;
 
@@ -88,15 +90,26 @@ std::string Join(const std::vector<std::string>& v)
   return out + "]";
 }
 
-// Every Label in the rendered tree, in depth-first (visual) order. This is the
-// assertion surface: what the user would actually read on screen.
+// Everything the user can actually read off the screen, in depth-first (visual) order:
+// label text, and image sources as "img:<basename>" (an Image url or an Icon glyph — both
+// render as an ImageView, so this is how a bound image is asserted).
 void CollectLabels(View view, std::vector<std::string>& out)
 {
   if(!view) return;
+  // A hidden view is not on screen — a validation error that was resolved is hidden, not
+  // blanked, and asserting its stale text would be asserting something nobody can read.
+  if(!view.GetProperty<bool>(Dali::Actor::Property::VISIBLE)) return;
   Label label = Label::DownCast(view);
   if(label)
   {
     out.push_back(std::string(label.GetText().CStr()));
+  }
+  ImageView image = ImageView::DownCast(view);
+  if(image)
+  {
+    std::string url = image.GetResourceUrl().CStr();
+    std::size_t slash = url.find_last_of('/');
+    out.push_back("img:" + (slash == std::string::npos ? url : url.substr(slash + 1)));
   }
   for(uint32_t i = 0; i < view.GetChildViewCount(); ++i)
   {
@@ -130,14 +143,18 @@ const char* ModeName(FeedMode mode)
   }
 }
 
-// Feed `path` through a fresh host in `mode` and return the rendered label texts.
+std::string gImageDir; // repo res/, so Image urls and Icon names resolve to real files
+
+// Feed `path` through a fresh host in `mode` and return what the screen shows.
 // `observersOut`, if given, receives the number of data-model observers still registered
 // across all surfaces once the feed is done.
 std::vector<std::string> Render(const std::string& path, FeedMode mode,
-                                size_t* observersOut = nullptr)
+                                size_t* observersOut = nullptr,
+                                size_t* tapDetectorsOut = nullptr)
 {
   A2ui::A2uiHost host;
   View           root;
+  host.GetRenderer().SetImageDir(gImageDir);
   host.SetOnBeginRenderingSurface([&root](const std::string&, View view) { root = view; });
 
   if(mode == FeedMode::File)
@@ -170,6 +187,8 @@ std::vector<std::string> Render(const std::string& path, FeedMode mode,
       }
     }
   }
+
+  if(tapDetectorsOut) *tapDetectorsOut = host.GetRenderer().GetTapDetectorCount();
 
   std::vector<std::string> texts;
   CollectLabels(root, texts);
@@ -213,12 +232,15 @@ void RunCase(const std::string& e2eDir, const Case& c)
 // behind on views that are no longer on screen — they keep firing, and they accumulate.
 void RunObserverParity(const std::string& e2eDir, const Case& c)
 {
-  size_t streamed = 0, batched = 0;
-  Render(e2eDir + c.file, FeedMode::Incremental, &streamed);
-  Render(e2eDir + c.file, FeedMode::File, &batched);
-  ReportTest(c.name + " (no leaked watches)", streamed == batched,
-             "streaming left " + std::to_string(streamed) + " observers, a fresh render of "
-             "the same data has " + std::to_string(batched));
+  size_t streamedWatches = 0, batchedWatches = 0, streamedTaps = 0, batchedTaps = 0;
+  Render(e2eDir + c.file, FeedMode::Incremental, &streamedWatches, &streamedTaps);
+  Render(e2eDir + c.file, FeedMode::File, &batchedWatches, &batchedTaps);
+  ReportTest(c.name + " (no leaked watches)", streamedWatches == batchedWatches,
+             "streaming left " + std::to_string(streamedWatches) + " observers, a fresh render "
+             "of the same data has " + std::to_string(batchedWatches));
+  ReportTest(c.name + " (no leaked tap targets)", streamedTaps == batchedTaps,
+             "streaming left " + std::to_string(streamedTaps) + " tap detectors, a fresh render "
+             "of the same data has " + std::to_string(batchedTaps));
 }
 
 // Streaming and batched feeds of the same payload must render identically. This
@@ -253,6 +275,7 @@ void RunParitySweep(const std::string& title, const std::string& dir)
 void RunAllTests(const std::string& root)
 {
   const std::string e2eDir = root + "/test/e2e/";
+  gImageDir                = root + "/res/";
 
   const std::vector<Case> cases = {
     // A FunctionCall binding must be re-evaluated when the data it reads changes —
@@ -262,9 +285,9 @@ void RunAllTests(const std::string& root)
 
     // Not just Text: an input's displayed value must go through the same binding on the
     // first paint and on every update, or the two disagree in opposite directions.
-    // (Slider value, DateTimeInput label, its value, its empty error label.)
+    // (Slider value, DateTimeInput label, its value, its calendar glyph.)
     {"function-call binding on inputs", "function-call-inputs.jsonl",
-     {"1,234", "Date/Time", "12/16/2025, 9:30 AM", ""}},
+     {"1,234", "Date/Time", "12/16/2025, 9:30 AM", "img:calendarToday.png"}},
 
     // children:{path, componentId} whose array arrives AFTER the components.
     {"template children appear when array arrives", "template-children.jsonl",
@@ -295,6 +318,21 @@ void RunAllTests(const std::string& root)
     // The data model root is itself an array.
     {"array-root item updates in place", "array-root-item-update.jsonl",
      {"a", "z"}},
+
+    // Bound images: an Image url composed by formatString, and an Icon name. Neither is
+    // text, so they are asserted through the resource the view ends up showing.
+    {"bound image and icon follow the data", "image-and-icon-binding.jsonl",
+     {"img:092f80161d74.jpg", "img:close.png"}},
+
+    // A bound AudioPlayer caption (which used to be skipped entirely when empty at first
+    // paint), and a validation rule whose condition reads a path OTHER than the field's own
+    // value — the error must clear when that other path is filled in.
+    {"bound caption and cross-field validation", "checks-and-audio.jsonl",
+     {"The Future of AI", "img:play.png", "Confirm"}},
+
+    // A list of Buttons that grows twice: each rebuild attaches fresh tap detectors, and
+    // the old ones must not pile up holding views that are no longer on screen.
+    {"list of buttons grows", "list-with-buttons.jsonl", {"one", "two", "three"}},
 
     // A list inside a list: the inner one rebuilds, then the outer one rebuilds over it.
     {"nested template lists", "nested-template-children.jsonl",

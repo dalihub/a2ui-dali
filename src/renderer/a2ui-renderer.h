@@ -53,6 +53,10 @@ public:
    */
   Dali::Ui::View Render(SurfaceModel& surface);
 
+  /// How many tap targets the renderer is holding alive (diagnostics — a list that rebuilds
+  /// without releasing its old detectors shows up here as a count that keeps climbing).
+  size_t GetTapDetectorCount() const { return mTapDetectors.size(); }
+
   ActionDispatcher& GetActionDispatcher() { return mActionDispatcher; }
   DiffEngine& GetDiffEngine() { return mDiffEngine; }
   ViewPool& GetViewPool() { return mViewPool; }
@@ -163,14 +167,23 @@ private:
   /// So each scope records into itself AND into every enclosing scope.
   struct WatchScope
   {
-    std::vector<uint32_t>       ids;
-    std::shared_ptr<WatchScope> parent;
+    std::vector<uint32_t>                 ids;
+    std::vector<Dali::TapGestureDetector> tapDetectors; ///< released with the generation
+    std::shared_ptr<WatchScope>           parent;
   };
   /// The generation currently being built (null outside BuildTemplateChildren).
   std::shared_ptr<WatchScope> mWatchScope;
 
   /// Watch @p path, recording the observer in the active generation (if any).
   void RecordWatch(DataModel& model, const std::string& path, DataChangeCallback cb) const;
+
+  /// Keep @p detector alive for as long as the view it was attached to. Inside a template
+  /// generation that is the generation's lifetime, not the whole surface's — otherwise a
+  /// list that rebuilds keeps a detector per item per rebuild, each holding a dead view.
+  void RetainTapDetector(Dali::TapGestureDetector detector);
+
+  /// Drop @p detectors from the retained set (their views are gone).
+  void ReleaseTapDetectors(const std::vector<Dali::TapGestureDetector>& detectors);
 
   /// Keep a rendered property in sync with the data model.
   ///
