@@ -249,6 +249,24 @@ void RunAllTests(const std::string& root)
     // The bound array grows after the first render.
     {"template children follow array growth", "template-children-grow.jsonl",
      {"a", "b", "c"}},
+
+    // Appending by writing the fields of the next index — the ordinary way a stream grows
+    // a list. The index equals the current length, which is the JSON Pointer append slot.
+    {"template children follow a field-wise append", "template-children-append.jsonl",
+     {"Mon", "1deg", "Tue", "2deg"}},
+
+    // Same, but the list starts out empty.
+    {"template children fill from an empty array", "template-children-from-empty.jsonl",
+     {"Mon", "1deg"}},
+
+    // A write the array cannot accept (index past the append slot, or a field name where
+    // an index belongs) must leave it alone rather than invent a row.
+    {"out-of-range array write leaves the list intact", "template-children-out-of-range.jsonl",
+     {"Mon", "1deg"}},
+
+    // The data model root is itself an array.
+    {"array-root item updates in place", "array-root-item-update.jsonl",
+     {"a", "z"}},
   };
 
   std::cout << "\n=== Streaming data binding ===" << std::endl;

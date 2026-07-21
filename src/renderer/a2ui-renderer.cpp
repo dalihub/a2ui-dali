@@ -396,9 +396,12 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
     }
 
     watched->first = model.NextObserverId();
+    // "/" + index, not arrayPath + "/" + index — a root-level array would otherwise scope
+    // its items to "//0", and "//0/name" never matches the "/0/name" an update notifies.
+    const std::string base = (arrayPath == "/") ? std::string() : arrayPath;
     for(int i = 0; i < count; ++i)
     {
-      DataContext itemCtx = scope.CreateChildContext(arrayPath + "/" + std::to_string(i));
+      DataContext itemCtx = scope.CreateChildContext(base + "/" + std::to_string(i));
       View        item    = self->RenderComponent(templateId, *comps, itemCtx);
       if(item)
       {
