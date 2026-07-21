@@ -464,6 +464,18 @@ void DataModel::NotifyObservers(const std::string& changedPath)
 
   mNotifying = false;
 
+  // A callback asked for a wholesale clear (e.g. it triggered a full re-render). Doing it
+  // during the loop would have destroyed the std::function that was executing, so it was
+  // deferred to here.
+  if(mClearObserversPending)
+  {
+    mClearObserversPending = false;
+    mObservers.clear();
+    mPendingAdds.clear();
+    mPendingRemoves.clear();
+    return;
+  }
+
   // Apply deferred modifications
   for(auto id : mPendingRemoves)
   {
@@ -496,6 +508,13 @@ void DataModel::Clear()
 
 void DataModel::ClearObservers()
 {
+  // Never clear from inside a notification: the observer being invoked lives in mObservers,
+  // and destroying the vector would destroy the callback mid-call.
+  if(mNotifying)
+  {
+    mClearObserversPending = true;
+    return;
+  }
   mObservers.clear();
   mPendingAdds.clear();
   mPendingRemoves.clear();

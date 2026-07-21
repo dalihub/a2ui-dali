@@ -157,6 +157,7 @@ private:
   std::vector<uint32_t>   mPendingRemoves;
   uint32_t                mNextObserverId = 1;
   bool                    mNotifying = false; // re-entrancy guard
+  bool                    mClearObserversPending = false; // ClearObservers() during a notify
 };
 
 } // namespace A2ui

@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A root-level array is handled too, and `ResolvePath` no longer reports an out-of-range
   index as a hit (`/f/2` on a two-element list used to resolve to the array itself).
 
+- **Bound `Icon.name` follows the data.** It was resolved once, which already broke three
+  shipped payloads under a streaming feed: the music player lost its pause glyph, the stats
+  card both its trend icons, the shipping card its "out for delivery" truck.
+- **A bound `AudioPlayer.description` can appear at all.** An empty caption at first paint
+  returned the bare control, leaving no label for the value to arrive into.
+- **Validation rules that read another field re-evaluate.** `checks` watched only the
+  field's own value, so `required(/other)` kept its error on screen after `/other` was
+  filled in.
+- **Tap targets no longer accumulate across list rebuilds.** Each rebuild attached fresh
+  detectors while the old ones were kept for the life of the surface, holding views that
+  are no longer on screen.
+- **`ClearObservers()` called from inside a notification is deferred** to the end of the
+  pass instead of destroying the callback that is running and skipping the observers after
+  it.
+
 ### Added
 
 - `a2ui-streaming-render-test` — an end-to-end test that drives the real renderer and
@@ -38,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and as a batched file, and all three must agree; every shipped sample and gallery screen
   is additionally rendered both ways and compared. `tools/run-tests.sh` runs it together
   with the conformance test.
+- Core unit tests for the data model's array-write rules and observer bookkeeping, in
+  `a2ui-conformance-test` (no display needed).
 - `DataModel::UnwatchAll()` / `ObserverCount()` — retire exactly the watches a rebuilt
   subtree registered, so repeated rebuilds cannot accumulate observers on dead views, and
   make the count observable so a test can prove it. A nested list is covered: each
