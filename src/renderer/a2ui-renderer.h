@@ -155,6 +155,23 @@ private:
                            float fallback = 0.0f) const;
   std::string GetBoundPath(const Dali::Ui::Integration::TreeNode* propNode, const DataContext& ctx) const;
 
+  /// Observers registered while a template generation is being built.
+  ///
+  /// A generation must be able to retire exactly the watches it created. An id RANGE is not
+  /// enough: a NESTED list rebuilds itself later, registering ids outside its parent's
+  /// range, and those would survive the parent's rebuild and keep repainting detached views.
+  /// So each scope records into itself AND into every enclosing scope.
+  struct WatchScope
+  {
+    std::vector<uint32_t>       ids;
+    std::shared_ptr<WatchScope> parent;
+  };
+  /// The generation currently being built (null outside BuildTemplateChildren).
+  std::shared_ptr<WatchScope> mWatchScope;
+
+  /// Watch @p path, recording the observer in the active generation (if any).
+  void RecordWatch(DataModel& model, const std::string& path, DataChangeCallback cb) const;
+
   /// Keep a rendered property in sync with the data model.
   ///
   /// Watches every path @p propNode depends on and, when one changes, RE-EVALUATES the

@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`updateDataModel` at an array-item path no longer destroys the array.** A path like
   `/forecast/1/temp` rewrote the parent list as an object (`{"0":…,"1":…}`), which read back
   fine but left any data-driven list bound to it rendering nothing on the next render.
+  Writes now address an existing index or the JSON Pointer append slot (`-`, or
+  `index == length`); anything else is rejected and logged instead of reshaping the list.
+  A root-level array is handled too, and `ResolvePath` no longer reports an out-of-range
+  index as a hit (`/f/2` on a two-element list used to resolve to the array itself).
 
 ### Added
 
@@ -34,8 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and as a batched file, and all three must agree; every shipped sample and gallery screen
   is additionally rendered both ways and compared. `tools/run-tests.sh` runs it together
   with the conformance test.
-- `DataModel::NextObserverId()` / `UnwatchRange()` — retire exactly the watches a rebuilt
-  subtree registered, so repeated rebuilds cannot accumulate observers on dead views.
+- `DataModel::UnwatchAll()` / `ObserverCount()` — retire exactly the watches a rebuilt
+  subtree registered, so repeated rebuilds cannot accumulate observers on dead views, and
+  make the count observable so a test can prove it. A nested list is covered: each
+  generation records its watches into every enclosing generation, so an outer rebuild also
+  retires what an inner rebuild registered after it.
 
 ## [0.12.0] — 2026-07-16
 

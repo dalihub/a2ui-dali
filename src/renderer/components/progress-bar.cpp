@@ -48,14 +48,11 @@ View A2uiRenderer::RenderProgressBar(const ComponentModel& comp, DataContext& ct
   track.Add(fill);
   track.Add(rest);
 
-  {
-    WatchBinding(progNode, ctx,
-      [fill, rest, parseStr](const std::string& v) mutable {
-        float p = parseStr(v, 0.0f);
-        fill.SetLayoutParams(FlexLayoutParams::New().SetFlexGrow(p).SetFlexBasis(0.0f));
-        rest.SetLayoutParams(FlexLayoutParams::New().SetFlexGrow(1.0f - p).SetFlexBasis(0.0f));
-      });
-  }
+  WatchBinding(progNode, ctx, [fill, rest, parseStr](const std::string& v) mutable {
+    float p = parseStr(v, 0.0f);
+    fill.SetLayoutParams(FlexLayoutParams::New().SetFlexGrow(p).SetFlexBasis(0.0f));
+    rest.SetLayoutParams(FlexLayoutParams::New().SetFlexGrow(1.0f - p).SetFlexBasis(0.0f));
+  });
 
   return track;
 }

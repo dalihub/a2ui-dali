@@ -128,8 +128,10 @@ View A2uiRenderer::Render(SurfaceModel& surface)
     return View();
   }
 
-  // Clear previous observers (from previous render)
+  // Clear previous observers (from previous render). The per-generation bookkeeping goes
+  // with them — a full render starts outside any template generation.
   surface.GetDataModel().ClearObservers();
+  mWatchScope.reset();
 
   // Release tap detectors from the previous render. The new view tree will
   // attach fresh detectors for its own Button / Card tap targets.
@@ -376,29 +378,33 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
   DataContext                   scope = ctx;
   A2uiRenderer*                 self  = this;
 
-  // The observer ids of the CURRENT generation of children, so a rebuild can drop exactly
-  // its own watches, and the item count it was built from.
-  auto watched  = std::make_shared<std::pair<uint32_t, uint32_t>>(0u, 0u);
+  // This generation's watches, linked to the generation that created this container so an
+  // outer rebuild also retires everything built beneath it.
+  auto own    = std::make_shared<WatchScope>();
+  own->parent = mWatchScope;
   auto rendered = std::make_shared<int>(-1);
 
   auto build = [self, templateId, arrayPath, comps, scope, container, prepareItem,
-                watched, rendered]() mutable {
+                own, rendered]() mutable {
     DataModel&      model = scope.GetDataModel();
     const TreeNode* array = model.ResolvePath(arrayPath);
     int             count = (array && array->GetType() == TreeNode::ARRAY)
                               ? static_cast<int>(array->Size()) : 0;
     if(count == *rendered) return; // same length — each item's own bindings keep it current
 
-    model.UnwatchRange(watched->first, watched->second);
+    model.UnwatchAll(own->ids);
+    own->ids.clear();
     while(container.GetChildViewCount() > 0)
     {
       container.Remove(container.GetChildViewAt(0));
     }
 
-    watched->first = model.NextObserverId();
     // "/" + index, not arrayPath + "/" + index — a root-level array would otherwise scope
     // its items to "//0", and "//0/name" never matches the "/0/name" an update notifies.
     const std::string base = (arrayPath == "/") ? std::string() : arrayPath;
+
+    std::shared_ptr<WatchScope> saved = self->mWatchScope;
+    self->mWatchScope                 = own; // items register into this generation
     for(int i = 0; i < count; ++i)
     {
       DataContext itemCtx = scope.CreateChildContext(base + "/" + std::to_string(i));
@@ -409,13 +415,24 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
         container.Add(item);
       }
     }
-    watched->second = model.NextObserverId();
-    *rendered       = count;
+    self->mWatchScope = saved;
+    *rendered         = count;
   };
 
   build(); // first paint — usually empty, the array arrives in a later updateDataModel
-  ctx.GetDataModel().Watch(arrayPath,
-    [build](const std::string&, const std::string&) mutable { build(); });
+  // Recorded in the ENCLOSING generation: this container is one of its children.
+  RecordWatch(ctx.GetDataModel(), arrayPath,
+              [build](const std::string&, const std::string&) mutable { build(); });
+}
+
+void A2uiRenderer::RecordWatch(DataModel& model, const std::string& path,
+                               DataChangeCallback cb) const
+{
+  uint32_t id = model.Watch(path, std::move(cb));
+  for(WatchScope* s = mWatchScope.get(); s; s = s->parent.get())
+  {
+    s->ids.push_back(id);
+  }
 }
 
 bool A2uiRenderer::WatchBinding(const TreeNode* propNode, DataContext& ctx,
@@ -445,7 +462,7 @@ bool A2uiRenderer::WatchBinding(const TreeNode* propNode, DataContext& ctx,
 
   for(const std::string& dep : deps)
   {
-    ctx.GetDataModel().Watch(dep, reevaluate);
+    RecordWatch(ctx.GetDataModel(), dep, reevaluate);
   }
   return true;
 }

@@ -131,7 +131,10 @@ const char* ModeName(FeedMode mode)
 }
 
 // Feed `path` through a fresh host in `mode` and return the rendered label texts.
-std::vector<std::string> Render(const std::string& path, FeedMode mode)
+// `observersOut`, if given, receives the number of data-model observers still registered
+// across all surfaces once the feed is done.
+std::vector<std::string> Render(const std::string& path, FeedMode mode,
+                                size_t* observersOut = nullptr)
 {
   A2ui::A2uiHost host;
   View           root;
@@ -153,6 +156,18 @@ std::vector<std::string> Render(const std::string& path, FeedMode mode)
     {
       if(line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
       host.JsonFeed(line);
+    }
+  }
+
+  if(observersOut)
+  {
+    *observersOut = 0;
+    for(const std::string& id : host.GetSurfaces().GetSurfaceIds())
+    {
+      if(A2ui::SurfaceModel* surface = host.GetSurfaces().GetSurface(id))
+      {
+        *observersOut += surface->GetDataModel().ObserverCount();
+      }
     }
   }
 
@@ -191,6 +206,19 @@ void RunCase(const std::string& e2eDir, const Case& c)
       ReportTest(label, false, std::string("exception: ") + e.what());
     }
   }
+}
+
+// A list that rebuilt itself while streaming must end up with the same number of live
+// watches as a fresh render of the same final data. More means a rebuild left observers
+// behind on views that are no longer on screen — they keep firing, and they accumulate.
+void RunObserverParity(const std::string& e2eDir, const Case& c)
+{
+  size_t streamed = 0, batched = 0;
+  Render(e2eDir + c.file, FeedMode::Incremental, &streamed);
+  Render(e2eDir + c.file, FeedMode::File, &batched);
+  ReportTest(c.name + " (no leaked watches)", streamed == batched,
+             "streaming left " + std::to_string(streamed) + " observers, a fresh render of "
+             "the same data has " + std::to_string(batched));
 }
 
 // Streaming and batched feeds of the same payload must render identically. This
@@ -267,12 +295,22 @@ void RunAllTests(const std::string& root)
     // The data model root is itself an array.
     {"array-root item updates in place", "array-root-item-update.jsonl",
      {"a", "z"}},
+
+    // A list inside a list: the inner one rebuilds, then the outer one rebuilds over it.
+    {"nested template lists", "nested-template-children.jsonl",
+     {"a", "b", "c"}},
   };
 
   std::cout << "\n=== Streaming data binding ===" << std::endl;
   for(const Case& c : cases)
   {
     RunCase(e2eDir, c);
+  }
+
+  std::cout << "\n=== Watch bookkeeping across rebuilds ===" << std::endl;
+  for(const Case& c : cases)
+  {
+    RunObserverParity(e2eDir, c);
   }
 
   RunParitySweep("samples", root + "/examples/samples/");

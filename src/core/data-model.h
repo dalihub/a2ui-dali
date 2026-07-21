@@ -110,22 +110,21 @@ public:
   void Unwatch(uint32_t observerId);
 
   /**
-   * The id the next Watch() will hand out.
+   * Unregister a batch of observers at once.
    *
-   * Bracket a block of rendering with two of these and every observer registered by that
-   * block falls in [before, after) — which is how a rebuilt subtree drops exactly its own
-   * watches (see UnwatchRange). Ids are only ever handed out in increasing order.
+   * Rebuilding a subtree destroys its views; without retiring their watches the observers
+   * would live on, repainting detached actors and growing the list on every rebuild.
+   * Safe to call from inside a notification: registrations still queued for this pass are
+   * dropped too, which a deferred removal alone would miss (pending removals are applied
+   * before pending additions).
    */
-  uint32_t NextObserverId() const { return mNextObserverId; }
+  void UnwatchAll(const std::vector<uint32_t>& observerIds);
 
   /**
-   * Unregister every observer whose id is in [firstId, lastIdExclusive).
-   *
-   * Rebuilding a subtree destroys its views; without this its observers would live on,
-   * repainting detached actors and growing the list on every rebuild. Safe to call from
-   * inside a notification: pending registrations are dropped too.
+   * How many observers are currently registered (diagnostics — a rebuild that fails to
+   * retire its old watches shows up here as a count that keeps climbing).
    */
-  void UnwatchRange(uint32_t firstId, uint32_t lastIdExclusive);
+  size_t ObserverCount() const { return mObservers.size(); }
 
   /**
    * Clear all data and observers.
