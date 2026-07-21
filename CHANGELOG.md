@@ -5,6 +5,38 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Reactive data binding for FunctionCall properties.** A property rendered from a
+  `{"call": …}` binding never followed the data model. Where the arguments held a nested
+  `{"path": …}` the update wrote the **raw** value over the formatted one (`formatDate`
+  showed `2025-12-16` instead of `Tue`, `formatCurrency` `12458.32` instead of
+  `$12,458.32`); where the only inputs were `${…}` tokens inside a `formatString` template
+  no watch was registered at all and the property stayed frozen. Bindings now collect every
+  path they read — direct `path`, nested paths in `args`, and each `${…}` token — and
+  **re-evaluate the whole binding** when any of them changes, matching the first paint.
+  ([#14](https://github.com/dalihub/a2ui-dali/issues/14))
+- **Data-driven child lists now follow their array.** `children: {path, componentId}` was
+  filled once at render time, so a list whose array arrived in a later `updateDataModel`
+  (the weather card's forecast row) stayed permanently empty. The bound array is now
+  watched and the children rebuilt when its length changes; per-item value changes continue
+  to go through each item's own bindings, so rows are not thrown away on every update.
+- **`updateDataModel` at an array-item path no longer destroys the array.** A path like
+  `/forecast/1/temp` rewrote the parent list as an object (`{"0":…,"1":…}`), which read back
+  fine but left any data-driven list bound to it rendering nothing on the next render.
+
+### Added
+
+- `a2ui-streaming-render-test` — an end-to-end test that drives the real renderer and
+  asserts on the real DALi view tree. Every case is fed message-by-message, as one string,
+  and as a batched file, and all three must agree; every shipped sample and gallery screen
+  is additionally rendered both ways and compared. `tools/run-tests.sh` runs it together
+  with the conformance test.
+- `DataModel::NextObserverId()` / `UnwatchRange()` — retire exactly the watches a rebuilt
+  subtree registered, so repeated rebuilds cannot accumulate observers on dead views.
+
 ## [0.12.0] — 2026-07-16
 
 Adds TV remote / D-pad focus support and folds in three rendering fixes. No a2ui-dali
