@@ -121,6 +121,20 @@ private:
                               DataContext& ctx, Dali::Ui::View outContainer,
                               bool isRow, float gap);
 
+  /// Fill @p container with one @p templateId instance per element of the array at
+  /// @p arrayPath, and KEEP IT IN SYNC: the array usually arrives in an updateDataModel
+  /// after the components, so a one-shot fill leaves the list permanently empty.
+  ///
+  /// Rebuilds only when the array's LENGTH changes — a changed field inside an item is
+  /// already handled by that item's own bindings, and rebuilding on every keystroke would
+  /// throw away the rows (and their input state) the user is looking at.
+  ///
+  /// @param[in] prepareItem Per-item layout setup (flex sizing, gap), given the item and index
+  void BuildTemplateChildren(const std::string& templateId, const std::string& arrayPath,
+                             const SurfaceComponentsModel& components, DataContext& ctx,
+                             Dali::Ui::View container,
+                             std::function<void(Dali::Ui::View item, int index)> prepareItem);
+
   // === Remote / keyboard focus ===
   /// Make @p view reachable by the TV remote: mark it keyboard-focusable so the
   /// FocusManager can move focus onto it, and run @p onActivate when the focused

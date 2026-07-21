@@ -381,6 +381,35 @@ void DataModel::Unwatch(uint32_t observerId)
   }
 }
 
+void DataModel::UnwatchRange(uint32_t firstId, uint32_t lastIdExclusive)
+{
+  if(firstId >= lastIdExclusive) return;
+  auto inRange = [firstId, lastIdExclusive](uint32_t id) {
+    return id >= firstId && id < lastIdExclusive;
+  };
+
+  if(mNotifying)
+  {
+    // Defer removal like Unwatch does — but also drop registrations still queued in
+    // mPendingAdds: those are not in mObservers yet, so a deferred remove would miss them
+    // (pending removes are applied before pending adds) and leak them.
+    for(const Observer& o : mObservers)
+    {
+      if(inRange(o.id)) mPendingRemoves.push_back(o.id);
+    }
+    mPendingAdds.erase(
+      std::remove_if(mPendingAdds.begin(), mPendingAdds.end(),
+                     [&inRange](const Observer& o) { return inRange(o.id); }),
+      mPendingAdds.end());
+    return;
+  }
+
+  mObservers.erase(
+    std::remove_if(mObservers.begin(), mObservers.end(),
+                   [&inRange](const Observer& o) { return inRange(o.id); }),
+    mObservers.end());
+}
+
 static bool IsHierarchicalMatch(const std::string& a, const std::string& b)
 {
   // Check if 'a' is a hierarchical prefix of 'b'.

@@ -110,6 +110,24 @@ public:
   void Unwatch(uint32_t observerId);
 
   /**
+   * The id the next Watch() will hand out.
+   *
+   * Bracket a block of rendering with two of these and every observer registered by that
+   * block falls in [before, after) — which is how a rebuilt subtree drops exactly its own
+   * watches (see UnwatchRange). Ids are only ever handed out in increasing order.
+   */
+  uint32_t NextObserverId() const { return mNextObserverId; }
+
+  /**
+   * Unregister every observer whose id is in [firstId, lastIdExclusive).
+   *
+   * Rebuilding a subtree destroys its views; without this its observers would live on,
+   * repainting detached actors and growing the list on every rebuild. Safe to call from
+   * inside a notification: pending registrations are dropped too.
+   */
+  void UnwatchRange(uint32_t firstId, uint32_t lastIdExclusive);
+
+  /**
    * Clear all data and observers.
    */
   void Clear();

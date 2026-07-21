@@ -21,36 +21,25 @@ bool A2uiRenderer::RenderTemplateChildren(const ComponentModel& comp,
 
   std::string tmplId          = cidNode->GetString();
   std::string dataBindingPath = ctx.Resolve(pathNode->GetString());
-  const TreeNode* arrayNode   = ctx.GetDataModel().ResolvePath(dataBindingPath);
-  if(arrayNode && arrayNode->GetType() == TreeNode::ARRAY)
-  {
-    int itemIndex = 0;
-    for(auto it = arrayNode->CBegin(); it != arrayNode->CEnd(); ++it)
-    {
-      DataContext childCtx =
-        ctx.CreateChildContext(dataBindingPath + "/" + std::to_string(itemIndex));
-      View itemView = RenderComponent(tmplId, components, childCtx);
-      if(itemView)
+
+  BuildTemplateChildren(tmplId, dataBindingPath, components, ctx, outContainer,
+    [isRow, gap](View itemView, int itemIndex) {
+      // In a Column the template rows fill the full width; in a Row the items share it
+      // evenly (a 0 basis + 0 width, or a MATCH_PARENT item fills the row and hides the
+      // rest — e.g. a weather forecast showing only the first day).
+      if(!isRow)
       {
-        // In a Column the template rows fill the full width; in a Row the items share it
-        // evenly (a 0 basis + 0 width, or a MATCH_PARENT item fills the row and hides the
-        // rest — e.g. a weather forecast showing only the first day).
-        if(!isRow)
-        {
-          itemView.SetLayoutParams(FlexLayoutParams::New().SetAlignSelf(FlexAlign::STRETCH));
-        }
-        else
-        {
-          itemView.SetLayoutParams(
-            FlexLayoutParams::New().SetFlexGrow(1.0f).SetFlexShrink(1.0f).SetFlexBasis(0.0f));
-          itemView.SetRequestedWidth(0.0f);
-        }
-        ApplyItemGap(itemView, isRow, gap, itemIndex == 0);
-        outContainer.Add(itemView);
+        itemView.SetLayoutParams(FlexLayoutParams::New().SetAlignSelf(FlexAlign::STRETCH));
       }
-      itemIndex++;
-    }
-  }
+      else
+      {
+        itemView.SetLayoutParams(
+          FlexLayoutParams::New().SetFlexGrow(1.0f).SetFlexShrink(1.0f).SetFlexBasis(0.0f));
+        itemView.SetRequestedWidth(0.0f);
+      }
+      ApplyItemGap(itemView, isRow, gap, itemIndex == 0);
+    });
+
   return true;  // recognized the template form (even if the array was empty)
 }
 
@@ -114,24 +103,12 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
       // we don't accidentally fall through to the template or childIds paths.
       std::string tmplId = cidNode->GetString();
       std::string dataBindingPath = ctx.Resolve(pathNode->GetString());
-      const Dali::Ui::Integration::TreeNode* arrayNode =
-        ctx.GetDataModel().ResolvePath(dataBindingPath);
 
-      if(arrayNode && arrayNode->GetType() == TreeNode::ARRAY)
-      {
-        int itemIndex = 0;
-        for(auto arrIt = arrayNode->CBegin(); arrIt != arrayNode->CEnd(); ++arrIt)
-        {
-          DataContext childCtx =
-            ctx.CreateChildContext(dataBindingPath + "/" + std::to_string(itemIndex));
-
-          View itemView = RenderComponent(tmplId, components, childCtx);
+      BuildTemplateChildren(tmplId, dataBindingPath, components, ctx, listContainer,
+        [sizeItemMainAxis, horizontal, gap](View itemView, int itemIndex) {
           sizeItemMainAxis(itemView);
           ApplyItemGap(itemView, horizontal, gap, itemIndex == 0);
-          listContainer.Add(itemView);
-          itemIndex++;
-        }
-      }
+        });
 
       return listContainer;
     }

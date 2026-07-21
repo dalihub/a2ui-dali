@@ -363,6 +363,58 @@ std::string A2uiRenderer::GetBoundPath(const TreeNode* propNode, const DataConte
   return ctx.Resolve(pathNode->GetString());
 }
 
+void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
+                                         const std::string& arrayPath,
+                                         const SurfaceComponentsModel& components,
+                                         DataContext& ctx, View container,
+                                         std::function<void(View, int)> prepareItem)
+{
+  // Captured by value / by pointer: the callback outlives this call. The components model
+  // and the DataModel both live in the SurfaceModel, and replacing either one goes through
+  // a full re-render, which clears the observer this installs.
+  const SurfaceComponentsModel* comps = &components;
+  DataContext                   scope = ctx;
+  A2uiRenderer*                 self  = this;
+
+  // The observer ids of the CURRENT generation of children, so a rebuild can drop exactly
+  // its own watches, and the item count it was built from.
+  auto watched  = std::make_shared<std::pair<uint32_t, uint32_t>>(0u, 0u);
+  auto rendered = std::make_shared<int>(-1);
+
+  auto build = [self, templateId, arrayPath, comps, scope, container, prepareItem,
+                watched, rendered]() mutable {
+    DataModel&      model = scope.GetDataModel();
+    const TreeNode* array = model.ResolvePath(arrayPath);
+    int             count = (array && array->GetType() == TreeNode::ARRAY)
+                              ? static_cast<int>(array->Size()) : 0;
+    if(count == *rendered) return; // same length — each item's own bindings keep it current
+
+    model.UnwatchRange(watched->first, watched->second);
+    while(container.GetChildViewCount() > 0)
+    {
+      container.Remove(container.GetChildViewAt(0));
+    }
+
+    watched->first = model.NextObserverId();
+    for(int i = 0; i < count; ++i)
+    {
+      DataContext itemCtx = scope.CreateChildContext(arrayPath + "/" + std::to_string(i));
+      View        item    = self->RenderComponent(templateId, *comps, itemCtx);
+      if(item)
+      {
+        prepareItem(item, i);
+        container.Add(item);
+      }
+    }
+    watched->second = model.NextObserverId();
+    *rendered       = count;
+  };
+
+  build(); // first paint — usually empty, the array arrives in a later updateDataModel
+  ctx.GetDataModel().Watch(arrayPath,
+    [build](const std::string&, const std::string&) mutable { build(); });
+}
+
 bool A2uiRenderer::WatchBinding(const TreeNode* propNode, DataContext& ctx,
                                 std::function<void(const std::string&)> apply) const
 {
