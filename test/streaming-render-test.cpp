@@ -232,6 +232,12 @@ void RunAllTests(const std::string& root)
     {"function-call binding updates", "function-call-binding.jsonl",
      {"Ada", "Tue", "high 80", "$1,234.50", "80/58"}},
 
+    // Not just Text: an input's displayed value must go through the same binding on the
+    // first paint and on every update, or the two disagree in opposite directions.
+    // (Slider value, DateTimeInput label, its value, its empty error label.)
+    {"function-call binding on inputs", "function-call-inputs.jsonl",
+     {"1,234", "Date/Time", "12/16/2025, 9:30 AM", ""}},
+
     // children:{path, componentId} whose array arrives AFTER the components.
     {"template children appear when array arrives", "template-children.jsonl",
      {"Tue", "74deg", "Wed", "76deg", "Thu", "71deg"}},

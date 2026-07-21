@@ -52,7 +52,9 @@ View A2uiRenderer::RenderDateTimeInput(const ComponentModel& comp, DataContext& 
     }
     return out;
   };
-  std::string raw = !boundPath.empty() ? ctx.GetDataModel().GetString(boundPath) : "";
+  // Resolve the binding, not the raw value at its path, so a FunctionCall-valued input
+  // paints the same string the watch below will hand it.
+  std::string raw = valueNode ? ResolveString(valueNode, ctx) : "";
   std::string displayText = raw.empty() ? kPlaceholder : formatDateTime(raw);
 
   Label inputLabel = Label::New(displayText.c_str());
