@@ -612,7 +612,37 @@ bool DataModel::MergeAtPath(const std::string& path, const std::string& valueJso
     }
     const TreeNode* intermediateNode = ResolvePath(intermediatePath);
 
-    if(intermediateNode && intermediateNode->GetType() == TreeNode::OBJECT)
+    if(intermediateNode && intermediateNode->GetType() == TreeNode::ARRAY)
+    {
+      // "/forecast/1/temp" — the parent is a LIST, so segments[i] is an index, not a key.
+      // Rewriting it as an object ({"1": …}) would silently turn the array into an object
+      // and every data-driven child list bound to it would render nothing.
+      long index = -1;
+      if(!segments[i].empty() &&
+         segments[i].find_first_not_of("0123456789") == std::string::npos)
+      {
+        index = std::strtol(segments[i].c_str(), nullptr, 10);
+      }
+
+      std::ostringstream oss;
+      oss << "[";
+      bool first = true;
+      long at    = 0;
+      for(auto it = intermediateNode->CBegin(); it != intermediateNode->CEnd(); ++it, ++at)
+      {
+        if(!first) oss << ",";
+        first = false;
+        oss << ((at == index) ? nestedValue : TreeNodeToJson((*it).second));
+      }
+      if(index >= at) // past the end (or a non-numeric segment) — append rather than drop
+      {
+        if(!first) oss << ",";
+        oss << nestedValue;
+      }
+      oss << "]";
+      nestedValue = oss.str();
+    }
+    else if(intermediateNode && intermediateNode->GetType() == TreeNode::OBJECT)
     {
       // Merge into existing object
       std::ostringstream oss;
