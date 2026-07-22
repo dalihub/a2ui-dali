@@ -220,7 +220,7 @@ View A2uiRenderer::RenderImage(const ComponentModel& comp, DataContext& ctx)
     bool capFull = fullWidth;
     WatchBinding(urlNode, ctx,
       [container, buildView, resolvePath, fullWidthHeight, capFull](const std::string& val) mutable {
-        while(container.GetChildCount() > 0) container.Remove(container.GetChildAt(0u));
+        while(container.GetChildViewCount() > 0) container.Remove(container.GetChildViewAt(0u));
         if(capFull) container.SetRequestedHeight(fullWidthHeight(resolvePath(val)));
         container.Add(buildView(resolvePath(val)));
       });

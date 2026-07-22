@@ -26,6 +26,7 @@
 #include <dali-ui-foundation/dali-ui-foundation.h>
 #include <dali/public-api/events/tap-gesture-detector.h>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 

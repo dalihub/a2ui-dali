@@ -56,9 +56,9 @@ void ViewPool::Release(const std::string& componentType, View view)
   view.SetProperty(Dali::Actor::Property::VISIBLE, true);
 
   // Remove all children
-  while(view.GetChildCount() > 0)
+  while(view.GetChildViewCount() > 0)
   {
-    view.Remove(view.GetChildAt(0));
+    view.Remove(view.GetChildViewAt(0u));
   }
 
   auto& pool = mPool[componentType];

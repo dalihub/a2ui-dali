@@ -99,7 +99,7 @@ View A2uiRenderer::RenderTabs(const ComponentModel& comp,
           tabLabels[j].SetFontWeight(sel ? Text::FontWeight::SEMI_BOLD : Text::FontWeight::NORMAL);
           tabUnderlines[j].SetBackgroundColor(sel ? COLOR_TEXT_DEFAULT : UiColor(0.0f, 0.0f, 0.0f, 0.0f));
         }
-        while(contentArea.GetChildCount() > 0) contentArea.Remove(contentArea.GetChildAt(0u));
+        while(contentArea.GetChildViewCount() > 0) contentArea.Remove(contentArea.GetChildViewAt(0u));
         contentArea.Add(tabContentViews[i]);
       };
 

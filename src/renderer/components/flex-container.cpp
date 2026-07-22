@@ -264,6 +264,15 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
                                strcmp(rowJustify, "spaceAround") == 0 ||
                                strcmp(rowJustify, "spaceEvenly") == 0);
 
+  // A cross-axis `align` DECLARED on the Row is the author's instruction for every child, images
+  // included. Pinning an image's width below must not also pin its cross alignment, or a Row that
+  // asked for align:start renders its thumbnail/avatar vertically CENTRED instead (the podcast
+  // artwork sank ~70px below the show name; the chat avatars ~25px below their username). Rows
+  // that declare nothing keep the implicit CENTER, which is what an icon/thumb + text line wants.
+  const char* rowAlign = comp.rawNode ? GetNodeString(*comp.rawNode, "align", "") : "";
+  bool rowAlignDeclared = (strcmp(rowAlign, "start") == 0 || strcmp(rowAlign, "end") == 0 ||
+                           strcmp(rowAlign, "center") == 0);
+
   // A Row whose children are ALL containers (e.g. Departs/Status/Arrives columns) wants
   // them split evenly. A Row with MIXED children (text + image + one info column) wants
   // the container to fill the *remaining* space. These need different flex seeding, so
@@ -475,8 +484,11 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
             float declared = child.GetMaximumWidth();
             if(declared > 0.0f && declared < 100000.0f)
             {
+              // AUTO defers to the Row's alignItems, so a declared align:start/end/center wins;
+              // only an undeclared Row falls back to the implicit CENTER (see rowAlignDeclared).
               child.SetRequestedWidth(declared);
-              child.SetLayoutParams(FlexLayoutParams::New().SetAlignSelf(FlexAlign::CENTER)
+              child.SetLayoutParams(FlexLayoutParams::New()
+                                      .SetAlignSelf(rowAlignDeclared ? FlexAlign::AUTO : FlexAlign::CENTER)
                                       .SetFlexGrow(0.0f).SetFlexShrink(0.0f).SetFlexBasis(declared));
               pinned = true;
             }
