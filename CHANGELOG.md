@@ -5,6 +5,23 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] — 2026-07-22
+
+Automated release tracking **dali-ui v2.5.30.10913** (with `dali2-core` / `dali2-adaptor` `dali_2.5.31`).
+
+### Changed
+
+- Switched child traversal in the image binding, tabs content swap, and `ViewPool::Release` from `GetChildCount()`/`GetChildAt()` to the View-typed `GetChildViewCount()`/`GetChildViewAt()` accessors introduced in dali-ui v2.5.30.
+- A Row that explicitly declares `align: start`, `end`, or `center` now propagates that cross-axis alignment to width-pinned children: such children are laid out with `FlexAlign::AUTO` so they inherit the Row's `alignItems`, instead of being forced to `FlexAlign::CENTER`.
+- Rows that declare no `align` keep the previous implicit `FlexAlign::CENTER` behaviour for width-pinned children, so icon/thumbnail + text lines are unchanged.
+- Added an explicit `<memory>` include to `a2ui-renderer.h`, which the dali-ui umbrella header no longer pulls in transitively.
+
+### Compatibility
+
+- Built against `dali-ui v2.5.30.10913` with `dali2-core`/`dali2-adaptor` `dali_2.5.31` on the
+  desktop `dali-env` build. Gallery corpus verified against the previous release
+  (pixel-regression gate + visual judge). Conformance: 82/82.
+
 ## [Unreleased]
 
 ### Fixed
