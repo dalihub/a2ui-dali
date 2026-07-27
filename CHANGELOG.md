@@ -5,7 +5,34 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.0] — 2026-07-27
+
+Two streaming-feed corrections, both of the same shape: a decision taken once, at first
+paint, against data that had not arrived yet. One of them was visible — a Button clipped a
+streamed label into a 40dp square — and the other was not, which is why it needed a spec
+check rather than a screenshot to settle.
+
+The C++ API changes: `ExpressionParser::RegisterFunction` takes a third argument. Existing
+calls compile unchanged, but a custom function that resolves `${…}` in its own string
+arguments must now declare it. Still builds against dali-ui v2.5.30.10913 (dali2-core /
+dali2-adaptor dali_2.5.31).
+
+### Fixed
+
+- **A view measured from bound text kept the size it had while the text was empty.** A
+  reactive binding updated a view's *content*, but every layout decision derived from that
+  content was taken once, at first paint — and under a streaming feed the label is empty at
+  that moment, because `createSurface` + `updateComponents` paint the tree and the value
+  only arrives in a later `updateDataModel`. Three sites decided from `""` and never looked
+  again: a Button sized to its label took the single-glyph branch and clipped a streamed
+  "Purchase License" into a 40dp square; a leaf Text in a Row skipped the natural-width
+  reservation that keeps a flex-grow sibling from squeezing it, so `flightStatus` lost
+  "OS 87" entirely; and a leaf Text in a centred Column stayed centred because an empty
+  string always "fits on one line", so the `userProfile` bio never fell back to left. Each
+  measurement is now a re-runnable function that the label's own binding re-runs when the
+  value lands, the way a streamed label's height already worked. A literal label is
+  unaffected, and the new observers go through `RecordWatch`, so a rebuilt list retires
+  them with its generation. (#15)
 
 ### Changed
 
