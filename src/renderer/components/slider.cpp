@@ -33,6 +33,16 @@ View A2uiRenderer::RenderSlider(const ComponentModel& comp, DataContext& ctx)
 
   float currentVal = !boundPath.empty() ? ctx.GetDataModel().GetFloat(boundPath, minVal) : minVal;
 
+  // `steps` (v1.0) divides the range into discrete intervals and snaps the value to the
+  // nearest one, so the track lands on a real stop rather than between two.
+  const int steps = static_cast<int>(GetNodeFloat(*comp.rawNode, "steps", 0.0f));
+  if(steps >= 1 && maxVal > minVal)
+  {
+    const float stepSize = (maxVal - minVal) / static_cast<float>(steps);
+    const float snapped  = minVal + std::round((currentVal - minVal) / stepSize) * stepSize;
+    currentVal = std::min(maxVal, std::max(minVal, snapped));
+  }
+
   // Value display — resolve the binding itself (not the raw value at its path), so a
   // FunctionCall-valued slider paints its formatted result and matches what the watch
   // below will write. A plain {path} resolves to the data model's own formatting, which

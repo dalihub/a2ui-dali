@@ -147,7 +147,7 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
           int itemIndex = 0;
           for(auto arrIt = arrayNode->CBegin(); arrIt != arrayNode->CEnd(); ++arrIt)
           {
-            DataContext childCtx = ctx.CreateChildContext(dataBindingPath + "/" + std::to_string(itemIndex));
+            DataContext childCtx = ctx.CreateCollectionItemContext(dataBindingPath + "/" + std::to_string(itemIndex), itemIndex);
 
             if(!tmplRootId.empty())
             {

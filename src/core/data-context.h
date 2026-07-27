@@ -52,6 +52,21 @@ public:
    */
   DataContext CreateChildContextForIndex(int index) const;
 
+  /**
+   * Create the context for one item of a list template.
+   *
+   * Same as CreateChildContext, but also records the iteration index so the `@index`
+   * built-in can read it. A2UI restricts `@index` to template instantiation (Collection
+   * Scope), which is exactly the set of contexts made through this call.
+   *
+   * @param childScope  Absolute path for the item (e.g. "/employees/2")
+   * @param index       0-based iteration index
+   */
+  DataContext CreateCollectionItemContext(const std::string& childScope, int index) const;
+
+  /// 0-based iteration index when this context is a list-template item, else -1.
+  int GetCollectionIndex() const { return mCollectionIndex; }
+
   // Data access (delegates to DataModel with resolved paths)
   std::string GetString(const std::string& path) const;
   float       GetFloat(const std::string& path, float fallback = 0.0f) const;
@@ -72,6 +87,7 @@ public:
 private:
   DataModel&  mDataModel;
   std::string mScope;
+  int         mCollectionIndex = -1;
 };
 
 } // namespace A2ui

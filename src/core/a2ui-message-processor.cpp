@@ -186,8 +186,11 @@ bool A2uiMessageProcessor::OnCreateSurface(const TreeNode& msgBody, SurfaceModel
     surface.SetSendDataModel(sendDmNode->GetBoolean());
   }
 
-  // theme { width, height, pattern } + sourceApp (the reference renderer SurfaceContext parity).
-  const TreeNode* themeNode = msgBody.Find("theme");
+  // Surface properties { width, height, pattern } + sourceApp (the reference renderer
+  // SurfaceContext parity). v1.0 renamed `theme` to `surfaceProperties`; both spellings are
+  // accepted, with the v1.0 name winning if an agent somehow sends both.
+  const TreeNode* themeNode = msgBody.Find("surfaceProperties");
+  if(!themeNode) themeNode = msgBody.Find("theme");
   if(themeNode && themeNode->GetType() == TreeNode::OBJECT)
   {
     auto readFloat = [](const TreeNode* o, const char* key) -> float {
@@ -208,6 +211,23 @@ bool A2uiMessageProcessor::OnCreateSurface(const TreeNode& msgBody, SurfaceModel
   }
 
   surface.KeepParser(parser);
+
+  // v1.0 lets createSurface carry the whole first frame, so a complete UI can arrive in a
+  // single message instead of create + updateDataModel + updateComponents. Data goes in
+  // first, so the components render against a populated model exactly as they would if the
+  // three messages had arrived in that order.
+  const TreeNode* initialData = msgBody.Find("dataModel");
+  if(initialData && initialData->GetType() == TreeNode::OBJECT)
+  {
+    surface.UpdateDataModel("/", *initialData);
+  }
+
+  const TreeNode* initialComponents = msgBody.Find("components");
+  if(initialComponents && initialComponents->GetType() == TreeNode::ARRAY)
+  {
+    surface.UpdateComponents(*initialComponents);
+  }
+
   return true;
 }
 

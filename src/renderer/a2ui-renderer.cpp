@@ -481,7 +481,7 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
     self->mWatchScope                 = own; // items register into this generation
     for(int i = 0; i < count; ++i)
     {
-      DataContext itemCtx = scope.CreateChildContext(base + "/" + std::to_string(i));
+      DataContext itemCtx = scope.CreateCollectionItemContext(base + "/" + std::to_string(i), i);
       View        item    = self->RenderComponent(templateId, *comps, itemCtx);
       if(item)
       {

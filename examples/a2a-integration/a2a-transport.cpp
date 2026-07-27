@@ -67,19 +67,24 @@ std::string BuildClientCapabilitiesMetadata(
     bool acceptsInlineCatalogs,
     const std::string& clientDataModel)
 {
-  std::ostringstream j;
-  j << "\"metadata\":{\"a2uiClientCapabilities\":{"
-    << "\"catalogIds\":[";
+  std::ostringstream caps;
+  caps << "{\"catalogIds\":[";
   for(size_t i = 0; i < catalogIds.size(); ++i)
   {
-    if(i > 0) j << ",";
-    j << "\"" << catalogIds[i] << "\"";
+    if(i > 0) caps << ",";
+    caps << "\"" << catalogIds[i] << "\"";
   }
-  j << "],\"acceptsInlineCatalogs\":" << (acceptsInlineCatalogs ? "true" : "false")
-    << "}";
+  caps << "],\"acceptsInlineCatalogs\":" << (acceptsInlineCatalogs ? "true" : "false") << "}";
+
+  // v1.0 renamed these metadata keys (client → renderer). Both are sent: an agent on
+  // either version finds the key it looks for, and the two carry identical values.
+  std::ostringstream j;
+  j << "\"metadata\":{\"a2uiClientCapabilities\":" << caps.str()
+    << ",\"a2uiRendererCapabilities\":" << caps.str();
   if(!clientDataModel.empty())
   {
-    j << ",\"a2uiClientDataModel\":" << clientDataModel;
+    j << ",\"a2uiClientDataModel\":" << clientDataModel
+      << ",\"a2uiRendererDataModel\":" << clientDataModel;
   }
   j << "}";
   return j.str();

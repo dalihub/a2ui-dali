@@ -34,6 +34,16 @@ namespace A2ui
 namespace
 {
 
+/// True if @p json is an empty JSON object, ignoring surrounding whitespace.
+bool IsEmptyJsonObject(const std::string& json)
+{
+  std::size_t i = json.find_first_not_of(" \t\r\n");
+  if(i == std::string::npos || json[i] != '{') return false;
+  std::size_t j = json.find_first_not_of(" \t\r\n", i + 1);
+  return j != std::string::npos && json[j] == '}' &&
+         json.find_first_not_of(" \t\r\n", j + 1) == std::string::npos;
+}
+
 /// True if @p s addresses an array slot: an all-digit index, or the JSON Pointer append
 /// token "-". Object keys are anything else.
 bool IsArrayIndexToken(const std::string& s)
@@ -162,6 +172,16 @@ bool DataModel::SetData(const std::string& path, const std::string& rawJson)
   {
     mJsonString = jsonString;
     mParser = JsonParser::New();
+    // The shared DALi parser rejects an empty object, so "{}" cannot be round-tripped
+    // through it. An empty model is a legitimate state — it is what deleting the last
+    // key leaves behind — so it is held as a parser-less empty document rather than
+    // reported as a parse failure. Reads resolve to nothing and the next write repopulates.
+    if(IsEmptyJsonObject(mJsonString))
+    {
+      mParser.Reset();
+      NotifyObservers(path);
+      return true;
+    }
     if(!mParser.Parse(mJsonString))
     {
       DALI_LOG_ERROR("[A2UI] DataModel: JSON parse error: %s\n",

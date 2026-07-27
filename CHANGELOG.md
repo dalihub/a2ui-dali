@@ -19,6 +19,43 @@ Corrects the 0.15.0 release, which shipped a test suite it could not pass.
   The suite is 119/119 again. No source change: 0.15.0's renderer and library code were
   correct and are unchanged here.
 
+## [Unreleased]
+
+Adds the A2UI **v1.0 candidate** features the renderer was missing, and fixes a deletion
+bug the new tests exposed. Everything added here is additive: v0.9 payloads take the same
+paths they did before, and the 29-screen gallery corpus is pixel-identical to 0.15.1.
+
+### Fixed
+
+- **Deleting the last key reported a failure.** The shared DALi JSON parser rejects an
+  empty object, so emptying the model routed through `SetData("/", "{}")` and came back
+  false — `updateDataModel` answered "could not remove" and the host saw the line fail,
+  even though the key had in fact been removed. An empty model is now held as a
+  parser-less empty document, which is what reads and the next write already assumed.
+  `DeleteAtPath("/")` (clear everything) was affected the same way.
+
+### Added
+
+- **`@index` built-in.** Returns the 0-based iteration index inside a list template, with an
+  optional `offset` argument for 1-based numbering. The `@` prefix is reserved for system
+  context evaluations, so it resolves from the render context rather than the catalog, and
+  `args` is optional. A2UI restricts it to Collection Scope: outside a list template it is
+  an evaluation error, not a `0`. `DataContext::CreateCollectionItemContext()` is what marks
+  a context as an iteration, so only real template items can answer it.
+- **`createSurface` accepts `surfaceProperties`.** v1.0's name for `theme`; the v0.9
+  spelling keeps working, with `surfaceProperties` winning if both are sent.
+- **`createSurface` accepts inline `components` and `dataModel`,** so a complete first frame
+  can arrive in one message instead of create + updateDataModel + updateComponents. Data is
+  applied before components, so the tree renders against a populated model exactly as it
+  would have from the three-message sequence.
+- **`Video.posterUrl`.** The still shown before playback is drawn as the media frame's
+  background, so the play glyph stays on top of the artwork instead of a flat dark box.
+- **`Slider.steps`.** Divides the range into discrete intervals and snaps the value to the
+  nearest stop.
+- **`a2uiRendererCapabilities` / `a2uiRendererDataModel` A2A metadata.** v1.0 renamed these
+  keys (client → renderer). Both spellings are now sent with identical values, so an agent
+  on either version finds the key it looks for.
+
 ## [0.15.0] — 2026-07-27
 
 Closes the gaps found by auditing the renderer against the upstream A2UI module blueprints

@@ -17,6 +17,27 @@ View A2uiRenderer::RenderVideo(const ComponentModel& comp, DataContext& ctx)
   frame.SetCornerRadius(Metrics::RadiusCard());
   frame.SetMargin(Extents(0, 0, static_cast<uint16_t>(Metrics::Dp(6)), static_cast<uint16_t>(Metrics::Dp(6))));
 
+  // `posterUrl` (v1.0) is the still shown before playback. It goes on as the frame's
+  // BACKGROUND rather than a child, so the play glyph keeps sitting on top of it — added
+  // as a child it would take its own slot in the flex column and push the glyph out.
+  // Absent (every v0.9 payload), the frame is unchanged.
+  const TreeNode* posterNode = comp.rawNode->Find("posterUrl");
+  std::string     posterUrl  = posterNode ? ResolveString(posterNode, ctx) : std::string();
+  if(!posterUrl.empty())
+  {
+    std::string posterPath = posterUrl;
+    if(posterUrl.find("://") == std::string::npos)
+    {
+      posterPath = (posterUrl[0] == '/') ? posterUrl : (mImageDir + posterUrl);
+      std::ifstream pf(posterPath);
+      if(!pf.is_open()) posterPath.clear();
+    }
+    if(!posterPath.empty())
+    {
+      frame.SetBackgroundImage(posterPath.c_str());
+    }
+  }
+
   std::string playPath = mImageDir + "icons/play.png";
   std::ifstream f(playPath);
   if(f.is_open())

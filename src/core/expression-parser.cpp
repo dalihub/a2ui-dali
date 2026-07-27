@@ -440,6 +440,35 @@ std::string ExpressionParser::Evaluate(const TreeNode& callNode, const DataConte
   }
 
   std::string funcName = nameNode->GetString();
+
+  // `@` is reserved for core system context evaluations, which read the render context
+  // rather than the catalog — so they are resolved here rather than registered as catalog
+  // functions. `args` is optional on these, unlike catalog functions.
+  if(funcName == "@index")
+  {
+    // A2UI restricts @index to Collection Scope: outside a list template there is no
+    // iteration to report, and the call is an evaluation error rather than a 0.
+    if(ctx.GetCollectionIndex() < 0)
+    {
+      DALI_LOG_ERROR("[A2UI] ExpressionParser: @index outside a list template\n");
+      return "";
+    }
+
+    int             offset   = 0;
+    const TreeNode* argsNode = callNode.Find("args");
+    if(argsNode)
+    {
+      const std::string raw = ResolveArg(*argsNode, "offset", ctx);
+      if(!raw.empty())
+      {
+        char* end = nullptr;
+        const long parsed = std::strtol(raw.c_str(), &end, 10);
+        if(end && *end == '\0') offset = static_cast<int>(parsed);
+      }
+    }
+    return std::to_string(ctx.GetCollectionIndex() + offset);
+  }
+
   auto it = mFunctions.find(funcName);
   if(it == mFunctions.end())
   {

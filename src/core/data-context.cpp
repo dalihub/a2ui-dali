@@ -51,6 +51,14 @@ DataContext DataContext::CreateChildContext(const std::string& childScope) const
   return DataContext(mDataModel, childScope);
 }
 
+DataContext DataContext::CreateCollectionItemContext(const std::string& childScope,
+                                                     int                index) const
+{
+  DataContext child(mDataModel, childScope);
+  child.mCollectionIndex = index;
+  return child;
+}
+
 DataContext DataContext::CreateChildContextForIndex(int index) const
 {
   std::string childScope = mScope;
@@ -62,7 +70,9 @@ DataContext DataContext::CreateChildContextForIndex(int index) const
   {
     childScope += "/" + std::to_string(index);
   }
-  return DataContext(mDataModel, childScope);
+  DataContext child(mDataModel, childScope);
+  child.mCollectionIndex = index;
+  return child;
 }
 
 std::string DataContext::GetString(const std::string& path) const

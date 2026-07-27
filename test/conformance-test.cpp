@@ -937,6 +937,147 @@ void TestClientDataModelSync()
 }
 
 // ========================================================================
+// Test 12: v1.0 forward-compatible message shapes
+//
+// v1.0 renames createSurface.theme to surfaceProperties, lets createSurface carry the
+// initial components/dataModel inline, and spells a deletion as an explicit
+// `value: null` (v0.9.1 spells the same thing as an omitted `value`). All are accepted
+// alongside the v0.9 spellings, which keep working.
+// ========================================================================
+
+void TestSurfaceProperties()
+{
+  std::cout << "\n=== Test: createSurface surfaceProperties (v1.0 name) ===" << std::endl;
+
+  A2uiMessageProcessor processor;
+  SurfaceModel surface;
+
+  bool ok = processor.ProcessLine(
+    R"({"version":"v1.0","createSurface":{"surfaceId":"sp","catalogId":"basic",)"
+    R"("surfaceProperties":{"width":480,"height":1280,"pattern":"card","agentDisplayName":"A"}}})",
+    surface);
+
+  ReportTest("createSurface with surfaceProperties parsed", ok,
+             ok ? "" : processor.GetLastError());
+  ReportTest("surfaceProperties width applied", surface.GetPreferWidth() == 480.0f,
+             "got " + std::to_string(surface.GetPreferWidth()));
+  ReportTest("surfaceProperties pattern applied", surface.GetPattern() == "card",
+             "got '" + surface.GetPattern() + "'");
+
+  // The v0.9 `theme` spelling must keep working.
+  A2uiMessageProcessor legacy;
+  SurfaceModel legacySurface;
+  legacy.ProcessLine(
+    R"({"version":"v0.9","createSurface":{"surfaceId":"th","catalogId":"basic",)"
+    R"("theme":{"width":320,"height":640,"pattern":"plain"}}})",
+    legacySurface);
+  ReportTest("legacy theme still applied", legacySurface.GetPreferWidth() == 320.0f,
+             "got " + std::to_string(legacySurface.GetPreferWidth()));
+}
+
+void TestInlineCreateSurface()
+{
+  std::cout << "\n=== Test: createSurface with inline components/dataModel ===" << std::endl;
+
+  A2uiMessageProcessor processor;
+  SurfaceModel surface;
+
+  bool ok = processor.ProcessLine(
+    R"({"version":"v1.0","createSurface":{"surfaceId":"inline","catalogId":"basic",)"
+    R"("dataModel":{"title":"Inline UI"},)"
+    R"("components":[{"id":"root","component":"Text","text":{"path":"/title"}}]}})",
+    surface);
+
+  ReportTest("inline createSurface parsed", ok, ok ? "" : processor.GetLastError());
+  ReportTest("inline components populated the tree", surface.GetComponentCount() == 1,
+             "count=" + std::to_string(surface.GetComponentCount()));
+
+  const auto* root = surface.GetComponentsModel().GetRoot();
+  ReportTest("inline root is the Text component", root && root->type == "Text",
+             root ? "got: " + root->type : "no root");
+  ReportTest("inline dataModel populated",
+             surface.GetDataModel().GetString("/title") == "Inline UI",
+             "got '" + surface.GetDataModel().GetString("/title") + "'");
+}
+
+void TestNullValueDeletes()
+{
+  std::cout << "\n=== Test: updateDataModel value:null deletes the key ===" << std::endl;
+
+  A2uiMessageProcessor processor;
+  SurfaceModel surface;
+  processor.ProcessLine(
+    R"({"version":"v0.9","createSurface":{"surfaceId":"del","catalogId":"basic"}})", surface);
+  processor.ProcessLine(
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"del","path":"/","value":{"keep":"a","drop":"b"}}})",
+    surface);
+
+  ReportTest("precondition: both keys present",
+             surface.GetDataModel().GetString("/drop") == "b");
+
+  bool ok = processor.ProcessLine(
+    R"({"version":"v1.0","updateDataModel":{"surfaceId":"del","path":"/drop","value":null}})",
+    surface);
+
+  ReportTest("value:null accepted", ok, ok ? "" : processor.GetLastError());
+  // Assert on the serialized model, not just ResolvePath: a stored null that merely fails
+  // to resolve would look identical through the pointer API but still ship in the payload.
+  ReportTest("key at path is gone from the model",
+             surface.GetDataModel().Serialize() == R"({"keep":"a"})",
+             "got " + surface.GetDataModel().Serialize());
+
+  // v0.9.1 spells the same deletion as an omitted `value`; v1.0 requires the explicit
+  // null. The renderer accepts both so either version's agents can clear a key.
+  bool omitted = processor.ProcessLine(
+    R"({"version":"v0.9.1","updateDataModel":{"surfaceId":"del","path":"/keep"}})", surface);
+  ReportTest("omitted value deletes too (v0.9.1 spelling)",
+             omitted && surface.GetDataModel().Serialize() == "{}",
+             "ok=" + std::to_string(omitted) + " model=" + surface.GetDataModel().Serialize());
+}
+
+// ========================================================================
+// Test 13: the built-in @index function
+//
+// Returns the 0-based iteration index inside a list template, plus an optional
+// offset. Outside a collection scope it must not evaluate.
+// ========================================================================
+
+void TestIndexFunction()
+{
+  std::cout << "\n=== Test: @index built-in ===" << std::endl;
+
+  DataModel model;
+  model.SetData("/", R"({"items":["a","b","c"]})");
+  ExpressionParser parser;
+
+  Dali::Ui::Integration::JsonParser jp = Dali::Ui::Integration::JsonParser::New();
+  jp.Parse(R"({"plain":{"call":"@index","args":{}},)"
+           R"("offset":{"call":"@index","args":{"offset":1}}})");
+  const TreeNode* plain  = jp.GetRoot()->Find("plain");
+  const TreeNode* offset = jp.GetRoot()->Find("offset");
+
+  DataContext root(model);
+  DataContext item1 = root.CreateCollectionItemContext("/items/1", 1);
+
+  ReportTest("@index inside a collection scope returns the index",
+             parser.Evaluate(*plain, item1) == "1",
+             "got '" + parser.Evaluate(*plain, item1) + "'");
+
+  ReportTest("@index applies the offset argument",
+             parser.Evaluate(*offset, item1) == "2",
+             "got '" + parser.Evaluate(*offset, item1) + "'");
+
+  DataContext item0 = root.CreateChildContextForIndex(0);
+  ReportTest("@index is 0-based",
+             parser.Evaluate(*plain, item0) == "0",
+             "got '" + parser.Evaluate(*plain, item0) + "'");
+
+  ReportTest("@index outside a collection scope does not evaluate",
+             parser.Evaluate(*plain, root).empty(),
+             "got '" + parser.Evaluate(*plain, root) + "'");
+}
+
+// ========================================================================
 // Main
 // ========================================================================
 
@@ -971,6 +1112,10 @@ int main(int argc, char** argv)
   TestSurfaceIdUniqueness();
   TestCoercionAndEscaping();
   TestClientDataModelSync();
+  TestSurfaceProperties();
+  TestInlineCreateSurface();
+  TestNullValueDeletes();
+  TestIndexFunction();
 
   // Summary
   std::cout << "\n========================================" << std::endl;
