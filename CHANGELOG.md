@@ -5,6 +5,20 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] — 2026-07-27
+
+Corrects the 0.15.0 release, which shipped a test suite it could not pass.
+
+### Fixed
+
+- Removed four conformance tests that entered the 0.15.0 commit by mistake. They cover
+  `createSurface.surfaceProperties`, an inline `createSurface` payload, and the `@index`
+  built-in — v1.0 features whose implementation is not part of this release — so 0.15.0
+  reported 128/136. One of them also asserted that an `updateDataModel` with an omitted
+  `value` is rejected, which contradicts the v0.9.1 deletion rule this release implements.
+  The suite is 119/119 again. No source change: 0.15.0's renderer and library code were
+  correct and are unchanged here.
+
 ## [0.15.0] — 2026-07-27
 
 Closes the gaps found by auditing the renderer against the upstream A2UI module blueprints
