@@ -186,6 +186,19 @@ the action — including the `surfaceId`, source component id, and any bound con
 delivers it through `OnUserAction`. Forward that JSON to your agent over whatever
 transport you use; `a2ui-dali` itself is transport-agnostic.
 
+The payload is a renderer-to-agent envelope as defined by the A2UI
+`renderer_to_agent` schema (`client_to_server.json` in the v0.9 tree):
+
+```json
+{"version":"v0.9","action":{
+  "name":"book_flight","surfaceId":"s1","sourceComponentId":"book_btn",
+  "timestamp":"2026-07-27T03:05:26Z","context":{"flight":"KE081","seats":2}}}
+```
+
+`wantResponse` and a generated `actionId` are added when the component asks for a
+response. Over A2A the payload is carried in a `DataPart` labelled
+`application/a2ui+json`.
+
 ## Component coverage
 
 The standard A2UI v0.9 catalog is mapped onto DALi UI. Components DALi has no native

@@ -22,7 +22,12 @@ Automated release tracking **dali-ui v2.5.30.10913** (with `dali2-core` / `dali2
   desktop `dali-env` build. Gallery corpus verified against the previous release
   (pixel-regression gate + visual judge). Conformance: 82/82.
 
-## [Unreleased]
+## [0.14.0] — 2026-07-27
+
+Makes data binding actually reactive and brings the renderer-to-agent wire format in line
+with the A2UI specification. **The action message changed shape** — see *Fixed* — so agents
+reading the old `userAction` key must be updated; that break is why this is a minor bump
+rather than a patch. No a2ui-dali C++ API changes.
 
 ### Fixed
 
@@ -93,6 +98,13 @@ Automated release tracking **dali-ui v2.5.30.10913** (with `dali2-core` / `dali2
   make the count observable so a test can prove it. A nested list is covered: each
   generation records its watches into every enclosing generation, so an outer rebuild also
   retires what an inner rebuild registered after it.
+
+### Compatibility
+
+- Built against `dali-ui v2.5.30.10913` with `dali2-core`/`dali2-adaptor` `dali_2.5.31` on
+  the desktop `dali-env` build — unchanged from 0.13.0. Conformance: 99/99; streaming
+  render: 82/82. The 29-screen gallery corpus renders pixel-identical to 0.13.0
+  (mean-abs-diff 0.000 on every screen).
 
 ## [0.12.0] — 2026-07-16
 
