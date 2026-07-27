@@ -117,6 +117,10 @@ private:
     mIndex = ((index % n) + n) % n;
 
     while(mContent.GetChildCount() > 0) mContent.Remove(mContent.GetChildAt(0u));
+    // Each screen is its own A2UI session. Without this, stepping back to a screen already
+    // visited would replay its createSurface for a surfaceId still active — which the
+    // processor correctly rejects as a duplicate.
+    mHost.Reset();
     mHost.JsonFeedFile(mScreens[mIndex]);
 
     std::string base = mScreens[mIndex];

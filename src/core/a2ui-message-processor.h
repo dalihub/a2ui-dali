@@ -21,6 +21,7 @@
 #include "data-context.h"
 #include <string>
 #include <functional>
+#include <set>
 
 namespace A2ui
 {
@@ -69,6 +70,19 @@ public:
   const std::string& GetLastError() const { return mLastError; }
 
   /**
+   * Start a fresh client session.
+   *
+   * Forgets which surfaceIds are active, so ids used before may be created again. A host
+   * that tears down its surfaces (e.g. to load a different screen) must call this, or the
+   * next createSurface for an id it already showed is reported as a duplicate.
+   */
+  void Reset()
+  {
+    mActiveSurfaceIds.clear();
+    mLastError.clear();
+  }
+
+  /**
    * Set the expression parser for callFunction handling (Phase 4).
    */
   void SetExpressionParser(ExpressionParser* parser) { mExprParser = parser; }
@@ -101,6 +115,11 @@ private:
   ExpressionParser* mExprParser = nullptr;
   FunctionResponseCallback mFunctionResponseCb;
   std::string mLastError;
+
+  /// Surfaces this processor has seen a createSurface for and not yet a deleteSurface.
+  /// A surfaceId must be unique per client session, so a second createSurface for one of
+  /// these is a stream error rather than a silent re-create.
+  std::set<std::string> mActiveSurfaceIds;
 };
 
 } // namespace A2ui

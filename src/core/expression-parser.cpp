@@ -30,6 +30,48 @@ using Dali::Ui::Integration::TreeNode;
 namespace A2ui
 {
 
+namespace
+{
+
+/**
+ * Index of the next live "${" at or after @p from, or npos.
+ *
+ * The basic catalog reserves "\${" for a literal dollar-brace ("To include a literal `${`
+ * sequence, escape it as `\${`"), so a token preceded by an odd number of backslashes is
+ * text, not an expression. Used by both the interpolator and the dependency scan so a
+ * literal never gets evaluated *or* watched.
+ */
+std::size_t FindLiveToken(const std::string& s, std::size_t from)
+{
+  for(std::size_t p = s.find("${", from); p != std::string::npos; p = s.find("${", p + 2))
+  {
+    std::size_t backslashes = 0;
+    while(p > backslashes && s[p - 1 - backslashes] == '\\') ++backslashes;
+    if((backslashes % 2) == 0) return p;
+  }
+  return std::string::npos;
+}
+
+/// Drop the escape from every literal "\${" once interpolation is done.
+std::string UnescapeDollarBrace(const std::string& s)
+{
+  std::string out;
+  out.reserve(s.size());
+  for(std::size_t i = 0; i < s.size(); ++i)
+  {
+    if(s[i] == '\\' && i + 2 < s.size() && s[i + 1] == '$' && s[i + 2] == '{')
+    {
+      out += "${";
+      i += 2;
+      continue;
+    }
+    out += s[i];
+  }
+  return out;
+}
+
+} // namespace
+
 ExpressionParser::ExpressionParser()
 {
   // === Validation functions ===
@@ -502,7 +544,8 @@ void ExpressionParser::CollectDependencyPaths(const TreeNode& node, const DataCo
     // resolves innermost-first.
     const char* raw = node.GetString();
     std::string str = raw ? raw : "";
-    for(std::size_t pos = str.find("${"); pos != std::string::npos; pos = str.find("${", pos + 2))
+    for(std::size_t pos = FindLiveToken(str, 0); pos != std::string::npos;
+        pos = FindLiveToken(str, pos + 2))
     {
       std::size_t end = str.find('}', pos + 2);
       if(end == std::string::npos) break;
@@ -555,14 +598,14 @@ std::string ExpressionParser::InterpolateString(const std::string& input, const 
 
     while(pos < result.size())
     {
-      size_t start = result.find("${", pos);
+      size_t start = FindLiveToken(result, pos);
       if(start == std::string::npos) break;
 
       // Find matching '}' — skip nested ${...} by looking for innermost
       size_t end = result.find('}', start + 2);
       if(end == std::string::npos) break;
 
-      size_t nested = result.find("${", start + 2);
+      size_t nested = FindLiveToken(result, start + 2);
       if(nested != std::string::npos && nested < end)
       {
         // There's a deeper nested ${ — skip to it
@@ -582,7 +625,7 @@ std::string ExpressionParser::InterpolateString(const std::string& input, const 
     if(!found) break;
   }
 
-  return result;
+  return UnescapeDollarBrace(result);
 }
 
 std::string ExpressionParser::ResolveInlineExpression(const std::string& expr, const DataContext& ctx) const

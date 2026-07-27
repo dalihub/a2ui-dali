@@ -138,17 +138,24 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
     {
       std::string compId = comp.id;
       DataContext capturedCtx = ctx;
+
+      // A Button's own `checks` disable it: while any rule fails the button is greyed out
+      // and neither input path may fire the action.
+      std::shared_ptr<bool> enabled = SetupActionGate(comp, ctx, button);
+
       Dali::TapGestureDetector detector = Dali::TapGestureDetector::New();
       detector.Attach(button);
       detector.DetectedSignal().Connect(this,
-        [this, actionNode, compId, capturedCtx](
+        [this, actionNode, compId, capturedCtx, enabled](
           Dali::Actor, const Dali::TapGesture&) mutable {
+          if(!*enabled) return;
           mActionDispatcher.Dispatch(*actionNode, compId, capturedCtx);
         });
       RetainTapDetector(detector);
 
       // TV remote: make the button focusable and dispatch the same action on OK/Enter.
-      EnableKeyActivation(button, [this, actionNode, compId, capturedCtx]() {
+      EnableKeyActivation(button, [this, actionNode, compId, capturedCtx, enabled]() {
+        if(!*enabled) return;
         mActionDispatcher.Dispatch(*actionNode, compId, capturedCtx);
       });
     }

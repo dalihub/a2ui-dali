@@ -245,6 +245,60 @@ View A2uiRenderer::RenderPlaceholder(const ComponentModel& comp)
 // Checks validation (Phase 2)
 // ========================================================================
 
+std::shared_ptr<bool> A2uiRenderer::SetupActionGate(const ComponentModel& comp, DataContext& ctx,
+                                                     View view)
+{
+  auto enabled = std::make_shared<bool>(true);
+
+  const TreeNode* checksNode = comp.rawNode ? comp.rawNode->Find("checks") : nullptr;
+  if(!checksNode || checksNode->GetType() != TreeNode::ARRAY)
+  {
+    return enabled; // no rules declared → never gated
+  }
+
+  // Opt this view into dali-ui's default state reaction so that toggling the disabled state
+  // below actually repaints it. Applied only to views that declare `checks` — buttons
+  // without rules keep exactly the visuals they had.
+  if(view) view.SetStateEffect(Dali::Ui::StateEffect::DefaultForInteractive());
+
+  // Re-run every rule and reflect the verdict on both the flag the handlers read and the
+  // view's own state. SetEnabled() is dali-ui's disabled token, so the control greys out
+  // the same way any other disabled foundation view does — no bespoke dim value here.
+  ExpressionParser* parser = &mExprParser;
+  auto evaluate = [parser, checksNode, enabled, view, ctx]() mutable {
+    bool ok = true;
+    for(auto it = checksNode->CBegin(); it != checksNode->CEnd(); ++it)
+    {
+      const TreeNode* condition = (*it).second.Find("condition");
+      if(condition && parser->Evaluate(*condition, ctx) == "false")
+      {
+        ok = false;
+        break;
+      }
+    }
+    *enabled = ok;
+    if(view) view.SetEnabled(ok);
+  };
+
+  evaluate(); // a form that starts invalid must render with its submit already disabled
+
+  std::vector<std::string> deps;
+  for(auto it = checksNode->CBegin(); it != checksNode->CEnd(); ++it)
+  {
+    if(const TreeNode* condition = (*it).second.Find("condition"))
+    {
+      mExprParser.CollectDependencyPaths(*condition, ctx, deps);
+    }
+  }
+  for(const std::string& dep : deps)
+  {
+    RecordWatch(ctx.GetDataModel(), dep,
+                [evaluate](const std::string&, const std::string&) mutable { evaluate(); });
+  }
+
+  return enabled;
+}
+
 void A2uiRenderer::SetupChecks(const ComponentModel& comp, DataContext& ctx,
                                 Label errorLabel, const std::string& boundPath,
                                 InputField inputField)

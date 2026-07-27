@@ -85,6 +85,19 @@ public:
   size_t GetSurfaceCount() const { return mSurfaces.size(); }
 
   /**
+   * The `a2uiClientDataModel` payload for the surfaces that asked for Data Model Sync.
+   *
+   * A surface created with `sendDataModel: true` expects its current data model to travel
+   * back with every client-to-server message, so the agent can read what the user has
+   * typed. The transport calls this before sending and, if the result is non-empty, drops
+   * it into its metadata field.
+   *
+   * @return the serialized `{"version":…,"surfaces":{…}}` object, or an empty string when
+   *         no active surface enabled the flag (nothing should then be attached).
+   */
+  std::string GetClientDataModel() const;
+
+  /**
    * Determine placement zone for a surface based on its ID or hints.
    * Default rules:
    *   - "main" or "default" → MAIN

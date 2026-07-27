@@ -52,14 +52,20 @@ std::string GenerateUuid()
 }
 
 /**
- * Build the `"metadata":{"a2uiClientCapabilities":{...}}` fragment that is
- * appended inside the message object. Per A2UI spec, the client advertises
- * which basic/custom catalogs it can render natively and whether it can
- * consume inline catalog definitions.
+ * Build the `"metadata":{...}` fragment that is appended inside the message object.
+ *
+ * Always carries `a2uiClientCapabilities`: which basic/custom catalogs the client can
+ * render natively and whether it can consume inline catalog definitions.
+ *
+ * When @p clientDataModel is non-empty it also carries `a2uiClientDataModel` — the current
+ * state of every surface created with `sendDataModel: true`. The spec has the client send
+ * this "on every message", which is how an agent reads back what the user typed before
+ * acting on a submit.
  */
 std::string BuildClientCapabilitiesMetadata(
     const std::vector<std::string>& catalogIds,
-    bool acceptsInlineCatalogs)
+    bool acceptsInlineCatalogs,
+    const std::string& clientDataModel)
 {
   std::ostringstream j;
   j << "\"metadata\":{\"a2uiClientCapabilities\":{"
@@ -70,7 +76,12 @@ std::string BuildClientCapabilitiesMetadata(
     j << "\"" << catalogIds[i] << "\"";
   }
   j << "],\"acceptsInlineCatalogs\":" << (acceptsInlineCatalogs ? "true" : "false")
-    << "}}";
+    << "}";
+  if(!clientDataModel.empty())
+  {
+    j << ",\"a2uiClientDataModel\":" << clientDataModel;
+  }
+  j << "}";
   return j.str();
 }
 
@@ -84,7 +95,8 @@ std::string BuildMessageStreamRequest(const std::string& userMessage,
                                        const std::string& contextId,
                                        const std::string& discoveredExtensionUri,
                                        const std::vector<std::string>& catalogIds,
-                                       bool acceptsInlineCatalogs)
+                                       bool acceptsInlineCatalogs,
+                                       const std::string& clientDataModel)
 {
   std::string extensionUri = !discoveredExtensionUri.empty()
                                ? discoveredExtensionUri
@@ -103,7 +115,8 @@ std::string BuildMessageStreamRequest(const std::string& userMessage,
   }
 
   std::string msgId = GenerateUuid();
-  std::string capabilities = BuildClientCapabilitiesMetadata(catalogIds, acceptsInlineCatalogs);
+  std::string capabilities =
+      BuildClientCapabilitiesMetadata(catalogIds, acceptsInlineCatalogs, clientDataModel);
 
   // Build JSON-RPC request
   std::ostringstream json;
@@ -447,7 +460,8 @@ void A2aTransportAdapter::SendMessage(const std::string& userMessage)
   std::string body = BuildMessageStreamRequest(userMessage, mA2uiVersion,
                                                 mContextId, mDiscoveredExtensionUri,
                                                 mSupportedCatalogIds,
-                                                mAcceptsInlineCatalogs);
+                                                mAcceptsInlineCatalogs,
+                                                SnapshotClientDataModel());
 
   DALI_LOG_ERROR("[A2A] Sending message/stream to %s\n", rpcEndpoint.c_str());
 
@@ -470,10 +484,14 @@ void A2aTransportAdapter::SendAction(const std::string& actionJson)
   // SendMessage completes and every subsequent action looks "not done" to
   // any logic gated on completion (e.g. the status-banner green transition).
   mCompleteFired = false;
-  mActionThread = std::thread(&A2aTransportAdapter::SendActionSync, this, actionJson);
+  // Snapshot the data model HERE, on the caller's (DALi event) thread — reading it from
+  // the worker would race the UI that is still writing into it.
+  mActionThread = std::thread(&A2aTransportAdapter::SendActionSync, this, actionJson,
+                              SnapshotClientDataModel());
 }
 
-void A2aTransportAdapter::SendActionSync(std::string actionJson)
+void A2aTransportAdapter::SendActionSync(std::string actionJson,
+                                         std::string clientDataModel)
 {
   // Send a client action via message/send (synchronous HTTP).
   // actionJson is the full A2UI action message body (data part payload).
@@ -500,7 +518,7 @@ void A2aTransportAdapter::SendActionSync(std::string actionJson)
                                ? mDiscoveredExtensionUri
                                : std::string(A2UI_EXTENSION_BASE) + "/v" + mA2uiVersion;
   std::string capabilities = BuildClientCapabilitiesMetadata(
-      mSupportedCatalogIds, mAcceptsInlineCatalogs);
+      mSupportedCatalogIds, mAcceptsInlineCatalogs, clientDataModel);
 
   // Build JSON-RPC message/send with the action as a DataPart.
   // Include A2UI extension URI + client capabilities so the server knows

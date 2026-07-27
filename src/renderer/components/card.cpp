@@ -99,17 +99,30 @@ View A2uiRenderer::RenderCard(const ComponentModel& comp,
     const TreeNode* actionNode = actionInfo.first;
     std::string sourceId = actionInfo.second;
     DataContext capturedCtx = ctx;
+
+    // The action may have been borrowed from a descendant (typically the card's Button), so
+    // gate on the checks of whoever actually declares it — otherwise a tap on the card
+    // would fire an action that the descendant itself has already disabled. Only the owner
+    // paints itself disabled: when a descendant owns the rules it has its own gate, and
+    // greying the whole card on top of that would double up.
+    const ComponentModel* actionOwner = components.GetComponent(sourceId);
+    std::shared_ptr<bool> enabled =
+      actionOwner ? SetupActionGate(*actionOwner, ctx, (sourceId == comp.id) ? card : View())
+                  : std::make_shared<bool>(true);
+
     Dali::TapGestureDetector detector = Dali::TapGestureDetector::New();
     detector.Attach(card);
     detector.DetectedSignal().Connect(this,
-      [this, actionNode, sourceId, capturedCtx](
+      [this, actionNode, sourceId, capturedCtx, enabled](
         Dali::Actor, const Dali::TapGesture&) mutable {
+        if(!*enabled) return;
         mActionDispatcher.Dispatch(*actionNode, sourceId, capturedCtx);
       });
     RetainTapDetector(detector);
 
     // TV remote: a clickable card is a focus target too; OK/Enter runs the same action.
-    EnableKeyActivation(card, [this, actionNode, sourceId, capturedCtx]() {
+    EnableKeyActivation(card, [this, actionNode, sourceId, capturedCtx, enabled]() {
+      if(!*enabled) return;
       mActionDispatcher.Dispatch(*actionNode, sourceId, capturedCtx);
     });
   }

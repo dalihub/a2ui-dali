@@ -59,6 +59,20 @@ public:
   A2uiRenderer& GetRenderer() { return mRenderer; }
   SurfaceGroupModel& GetSurfaces() { return mSurfaces; }
 
+  /**
+   * Drop every surface and start a fresh A2UI session.
+   *
+   * A surfaceId is unique per session, so replaying a stream the host has already shown
+   * (a screen browser stepping back to an earlier example) needs the previous session
+   * cleared first — otherwise its createSurface is correctly rejected as a duplicate.
+   * Callbacks, image dir and other renderer settings are kept.
+   */
+  void Reset()
+  {
+    mSurfaces.Reset();
+    mProcessor.Reset();
+  }
+
 private:
   void FeedLine(const std::string& line, bool deferRender = false);
   void RenderSurface(const std::string& surfaceId, SurfaceModel& surface);

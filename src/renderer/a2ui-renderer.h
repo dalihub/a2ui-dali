@@ -154,6 +154,20 @@ private:
                    Dali::Ui::Label errorLabel, const std::string& boundPath,
                    Dali::Ui::InputField inputField = Dali::Ui::InputField());
 
+  /// Gate @p view's action on @p comp's `checks`.
+  ///
+  /// The spec makes validation a property of the *action*, not just of the input that is
+  /// being validated: "Buttons can also define `checks`. If any check fails, the button is
+  /// automatically disabled." So while any rule fails the view is put into dali-ui's
+  /// disabled state and the returned flag reads false; it flips back as soon as the data
+  /// the rules read makes them pass. Action handlers MUST consult the flag — the view's
+  /// disabled state does not stop the component's own TapGestureDetector from firing.
+  ///
+  /// @return a flag shared with the watches, true while every rule passes. A component
+  ///         with no `checks` is always enabled, matching `isValid` being unset upstream.
+  std::shared_ptr<bool> SetupActionGate(const ComponentModel& comp, DataContext& ctx,
+                                        Dali::Ui::View view);
+
   // === Data binding helpers ===
   std::string ResolveString(const Dali::Ui::Integration::TreeNode* propNode, const DataContext& ctx) const;
   float       ResolveFloat(const Dali::Ui::Integration::TreeNode* propNode, const DataContext& ctx,

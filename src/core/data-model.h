@@ -71,6 +71,18 @@ public:
   bool SetDataFromNode(const std::string& path, const Dali::Ui::Integration::TreeNode& value);
 
   /**
+   * Remove whatever is stored at the given JSON Pointer path.
+   *
+   * This is the A2UI deletion primitive: v0.9.1 spells a deletion as an `updateDataModel`
+   * whose `value` is omitted, v1.0 as an explicit `value: null`. An object key disappears;
+   * an array slot is emptied but the array keeps its length, so the indices of later items
+   * — and the components bound to them — do not shift.
+   *
+   * @return true if the path is absent afterwards (including when it was never there).
+   */
+  bool DeleteAtPath(const std::string& path);
+
+  /**
    * Set a single string value at an arbitrary JSON Pointer path.
    * Supports nested paths (e.g. "/contact/firstName").
    * This is the primary method for input components to write back to the model.

@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cerrno>
+#include <cctype>
 #include <algorithm>
 
 using Dali::Ui::Integration::JsonParser;
@@ -29,6 +30,39 @@ using Dali::Ui::Integration::TreeNode;
 
 namespace A2ui
 {
+
+namespace
+{
+
+/// True if @p s addresses an array slot: an all-digit index, or the JSON Pointer append
+/// token "-". Object keys are anything else.
+bool IsArrayIndexToken(const std::string& s)
+{
+  if(s == "-") return true;
+  if(s.empty() || s.size() > 9) return false;
+  return s.find_first_not_of("0123456789") == std::string::npos;
+}
+
+/// The container that must be created to hold @p valueJson at @p segment when nothing
+/// exists there yet. A2UI JSON Pointer auto-typing: a numeric segment creates an Array
+/// (slots before the index stay empty), anything else an Object. Writing an object for a
+/// numeric segment would turn `/items/0/name` into {"items":{"0":…}}, which every
+/// data-driven list bound to `/items` then fails to read.
+std::string MakeContainerFor(const std::string& segment, const std::string& valueJson)
+{
+  if(!IsArrayIndexToken(segment))
+  {
+    return "{\"" + segment + "\":" + valueJson + "}";
+  }
+  long index = (segment == "-") ? 0 : std::strtol(segment.c_str(), nullptr, 10);
+  std::string out = "[";
+  for(long i = 0; i < index; ++i) out += "null,";
+  out += valueJson;
+  out += "]";
+  return out;
+}
+
+} // namespace
 
 // Format a float as the shortest decimal that round-trips back to the same float32 — the
 // way JS prints a number on the web. Avoids both the default ostream's 6-significant-figure
@@ -157,6 +191,89 @@ bool DataModel::SetDataFromNode(const std::string& path, const TreeNode& value)
   }
 
   return SetData(path, valueJson);
+}
+
+bool DataModel::DeleteAtPath(const std::string& path)
+{
+  if(path == "/" || path.empty())
+  {
+    // Removing the root removes everything.
+    mJsonString = "{}";
+    mParser     = JsonParser::New();
+    if(!mParser.Parse(mJsonString))
+    {
+      mParser.Reset();
+      return false;
+    }
+    NotifyObservers("/");
+    return true;
+  }
+
+  if(!mParser || !mParser.GetRoot())
+  {
+    return true; // nothing stored — the key is already absent
+  }
+
+  std::size_t slash = path.find_last_of('/');
+  if(slash == std::string::npos) return false;
+  const std::string parentPath = (slash == 0) ? "/" : path.substr(0, slash);
+  const std::string leaf       = path.substr(slash + 1);
+  if(leaf.empty()) return false;
+
+  const TreeNode* parent = ResolvePath(parentPath);
+  if(!parent) return true; // parent absent → nothing to remove
+
+  std::string rebuilt;
+  if(parent->GetType() == TreeNode::ARRAY)
+  {
+    // Emptying an array slot preserves the array's length (sparse array), so that the
+    // indices of the items after it do not shift under the components bound to them.
+    if(!IsArrayIndexToken(leaf)) return false;
+    long index = std::strtol(leaf.c_str(), nullptr, 10);
+    std::ostringstream oss;
+    oss << "[";
+    long at = 0;
+    for(auto it = parent->CBegin(); it != parent->CEnd(); ++it, ++at)
+    {
+      if(at) oss << ",";
+      oss << ((at == index) ? std::string("null") : TreeNodeToJson((*it).second));
+    }
+    oss << "]";
+    rebuilt = oss.str();
+  }
+  else if(parent->GetType() == TreeNode::OBJECT)
+  {
+    bool found = false;
+    std::ostringstream oss;
+    oss << "{";
+    bool first = true;
+    for(auto it = parent->CBegin(); it != parent->CEnd(); ++it)
+    {
+      const char* name = (*it).first;
+      if(!name) continue;
+      if(std::strcmp(name, leaf.c_str()) == 0) { found = true; continue; } // drop this key
+      if(!first) oss << ",";
+      first = false;
+      oss << "\"";
+      EscapeJsonString(oss, name);
+      oss << "\":" << TreeNodeToJson((*it).second);
+    }
+    oss << "}";
+    if(!found) return true; // already absent
+    rebuilt = oss.str();
+  }
+  else
+  {
+    return false; // a scalar has no members to remove
+  }
+
+  if(parentPath == "/")
+  {
+    return SetData("/", rebuilt);
+  }
+  if(!MergeAtPath(parentPath, rebuilt)) return false;
+  NotifyObservers(path);
+  return true;
 }
 
 bool DataModel::SetValue(const std::string& path, const std::string& value)
@@ -329,13 +446,21 @@ bool DataModel::GetBool(const std::string& path, bool fallback) const
   if(node->GetType() == TreeNode::BOOLEAN)
     return node->GetBoolean();
 
-  // Also accept string "true"/"false"
+  // A2UI type-coercion standard: "true"/"false" match case-insensitively and *any other*
+  // string is false (not the caller's fallback — otherwise a `fallback=true` call would
+  // read arbitrary text as true). A non-zero number is true, zero is false.
   if(node->GetType() == TreeNode::STRING)
   {
     const char* str = node->GetString();
-    if(strcmp(str, "true") == 0) return true;
-    if(strcmp(str, "false") == 0) return false;
+    if(!str) return fallback;
+    std::string lowered(str);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return lowered == "true";
   }
+
+  if(node->GetType() == TreeNode::INTEGER) return node->GetInteger() != 0;
+  if(node->GetType() == TreeNode::FLOAT)   return node->GetFloat() != 0.0f;
 
   return fallback;
 }
@@ -549,11 +674,12 @@ bool DataModel::MergeAtPath(const std::string& path, const std::string& valueJso
       return false;
     }
 
-    // Build nested JSON from inside out
+    // Build nested JSON from inside out. Each wrap creates the container that holds the
+    // level below it, so its shape is decided by that level's segment (numeric → Array).
     std::string json = valueJson;
     for(int i = static_cast<int>(segments.size()) - 1; i >= 0; --i)
     {
-      json = "{\"" + segments[i] + "\":" + json + "}";
+      json = MakeContainerFor(segments[i], json);
     }
 
     mJsonString = json;
@@ -775,8 +901,9 @@ bool DataModel::MergeAtPath(const std::string& path, const std::string& valueJso
     }
     else
     {
-      // Create new intermediate object
-      nestedValue = "{\"" + segments[i] + "\":" + nestedValue + "}";
+      // Nothing there yet — create the intermediate container, Array or Object per the
+      // segment that addresses it.
+      nestedValue = MakeContainerFor(segments[i], nestedValue);
     }
   }
 

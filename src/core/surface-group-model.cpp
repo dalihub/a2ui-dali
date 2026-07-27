@@ -14,7 +14,9 @@
  */
 
 #include "surface-group-model.h"
+#include "a2ui-protocol.h"
 #include <algorithm>
+#include <sstream>
 
 namespace A2ui
 {
@@ -66,6 +68,34 @@ void SurfaceGroupModel::DeleteSurface(const std::string& surfaceId)
 bool SurfaceGroupModel::HasSurface(const std::string& surfaceId) const
 {
   return mSurfaces.find(surfaceId) != mSurfaces.end();
+}
+
+std::string SurfaceGroupModel::GetClientDataModel() const
+{
+  // Deterministic order: the map is unordered, and a payload whose key order changes
+  // between two otherwise identical sends is needless churn for anything diffing it.
+  std::vector<std::string> ids;
+  for(const auto& [id, surface] : mSurfaces)
+  {
+    if(surface.IsCreated() && surface.GetSendDataModel()) ids.push_back(id);
+  }
+  if(ids.empty()) return {};
+  std::sort(ids.begin(), ids.end());
+
+  std::ostringstream j;
+  j << "{\"version\":\"" << A2UI_PROTOCOL_VERSION << "\",\"surfaces\":{";
+  bool first = true;
+  for(const std::string& id : ids)
+  {
+    const SurfaceModel& surface = mSurfaces.at(id);
+    std::string dm = surface.GetDataModel().Serialize();
+    if(dm.empty()) dm = "{}"; // a surface that has not received data yet still reports in
+    if(!first) j << ",";
+    first = false;
+    j << "\"" << id << "\":" << dm;
+  }
+  j << "}}";
+  return j.str();
 }
 
 std::vector<std::string> SurfaceGroupModel::GetSurfaceIds() const

@@ -87,6 +87,25 @@ public:
   bool GetAcceptsInlineCatalogs() const { return mAcceptsInlineCatalogs; }
 
   /**
+   * Supply the `a2uiClientDataModel` payload to attach to outgoing messages.
+   *
+   * A surface created with `sendDataModel: true` must send its current data model with
+   * every client-to-server message, so the agent can read what the user has entered. Wire
+   * this to the renderer's surface registry:
+   *
+   *   a2a.SetClientDataModelProvider([&]{ return host.GetSurfaces().GetClientDataModel(); });
+   *
+   * The provider is called on the thread that calls SendMessage/SendAction (the DALi event
+   * thread) and the result is snapshotted before the request goes to the worker, so it
+   * never reads the data model while the UI is mutating it. Returning an empty string
+   * attaches nothing.
+   */
+  void SetClientDataModelProvider(std::function<std::string()> provider)
+  {
+    mClientDataModelProvider = std::move(provider);
+  }
+
+  /**
    * Send a user message via A2A message/stream.
    * Starts SSE streaming; A2UI DataParts are extracted and forwarded as JSONL.
    */
@@ -151,7 +170,15 @@ private:
    *  round-trip and fans the response out via mOnChunk. SendAction dispatches
    *  this on mActionThread so the caller (usually the DALi event thread
    *  handling a Button tap) is not blocked. */
-  void SendActionSync(std::string actionJson);
+  void SendActionSync(std::string actionJson, std::string clientDataModel);
+
+  /** Snapshot the client data model on the CALLING thread (see the provider setter). */
+  std::string SnapshotClientDataModel() const
+  {
+    return mClientDataModelProvider ? mClientDataModelProvider() : std::string();
+  }
+
+  std::function<std::string()> mClientDataModelProvider;
 
   std::thread              mWorkerThread;
   std::thread              mActionThread;

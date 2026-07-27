@@ -199,6 +199,31 @@ The payload is a renderer-to-agent envelope as defined by the A2UI
 response. Over A2A the payload is carried in a `DataPart` labelled
 `application/a2ui+json`.
 
+A component that declares `checks` gates its own action: while any rule fails the control
+is rendered disabled and neither a tap nor the remote's OK key dispatches. It re-enables
+reactively as soon as the data satisfies the rules, so a submit button cannot fire on an
+invalid form.
+
+### Data model sync
+
+A surface created with `sendDataModel: true` is asking for its current data model to travel
+back with every message, so the agent can read what the user entered. The renderer collects
+it; the transport attaches it:
+
+```cpp
+a2a.SetClientDataModelProvider([&]{ return host.GetSurfaces().GetClientDataModel(); });
+```
+
+`GetClientDataModel()` returns the `{"version":…,"surfaces":{…}}` payload for the surfaces
+that set the flag, or an empty string when none did (nothing is then attached).
+
+### Sessions
+
+A `surfaceId` is unique per client session, so a second `createSurface` for a surface that
+is still active is reported as an error rather than silently recreating it. Call
+`host.Reset()` before replaying a stream the host has already shown — a screen browser
+stepping back to an earlier example, for instance.
+
 ## Component coverage
 
 The standard A2UI v0.9 catalog is mapped onto DALi UI. Components DALi has no native

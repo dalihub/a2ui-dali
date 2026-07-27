@@ -33,6 +33,8 @@
 #include "../src/core/surface-model.h"
 #include "../src/core/action-dispatcher.h"
 #include "../src/core/a2ui-protocol.h"
+#include "../src/core/surface-group-model.h"
+#include "../src/core/expression-parser.h"
 
 #include <dali-ui-foundation/integration-api/builder/json-parser.h>
 #include <fstream>
@@ -103,6 +105,16 @@ void TestValidMessages(const std::string& dataDir)
   {
     lineNum++;
     if(line.empty()) continue;
+
+    // This file is a CATALOGUE of individually-valid messages, not one coherent session:
+    // it carries several createSurface lines for the same surfaceId. Replaying them
+    // against one session would (correctly) trip the duplicate-surfaceId rule, so each
+    // createSurface here begins a fresh session — the test asks "does this message
+    // parse?", and surface uniqueness is covered by its own test below.
+    if(line.find("createSurface") != std::string::npos)
+    {
+      processor.Reset();
+    }
 
     // Each message is independent — some are createSurface, some updateComponents, etc.
     // For updateComponents/updateDataModel, we need a surface to exist first.
@@ -228,11 +240,11 @@ void TestComponentTypeCoverage(const std::string& dataDir)
     "Button", "TextField", "CheckBox", "ChoicePicker", "Slider", "DateTimeInput"
   };
 
-  // Build a test message with each component type
-  A2uiMessageProcessor processor;
-
   for(const auto& comp : allComponents)
   {
+    // A fresh processor per component: each check is its own client session, so reusing
+    // the same surfaceId across them is not a duplicate-createSurface stream error.
+    A2uiMessageProcessor processor;
     SurfaceModel surface;
 
     // Create surface
@@ -725,6 +737,345 @@ void TestMimeType()
 }
 
 // ========================================================================
+// Test 12: JSON Pointer auto-typing
+//
+// Spec rule: when a write creates intermediate nodes, a numeric segment must
+// create an Array and anything else an Object. Writing an object for a numeric
+// segment turns "/items/0/name" into {"items":{"0":…}}, which every data-driven
+// list bound to /items then fails to read.
+// ========================================================================
+void TestJsonPointerAutoTyping()
+{
+  std::cout << "\n=== Test: JSON Pointer Auto-typing ===" << std::endl;
+
+  {
+    DataModel dm;
+    dm.SetValue("/items/0/name", "x");
+    ReportTest("numeric segment creates an Array (from empty)",
+               dm.Serialize() == R"({"items":[{"name":"x"}]})", "got: " + dm.Serialize());
+  }
+  {
+    DataModel dm;
+    dm.SetData("/", R"({"obj":{}})");
+    dm.SetValue("/obj/list/0", "v");
+    ReportTest("numeric segment creates an Array (under existing object)",
+               dm.Serialize() == R"({"obj":{"list":["v"]}})", "got: " + dm.Serialize());
+  }
+  {
+    DataModel dm;
+    dm.SetValue("/a/b/c", "x");
+    ReportTest("non-numeric segments still create Objects",
+               dm.Serialize() == R"({"a":{"b":{"c":"x"}}})", "got: " + dm.Serialize());
+  }
+  {
+    // Index > 0 leaves the earlier slots empty rather than shifting the value down.
+    DataModel dm;
+    dm.SetValue("/rows/2", "third");
+    ReportTest("index past the end pads the array",
+               dm.Serialize() == R"({"rows":[null,null,"third"]})", "got: " + dm.Serialize());
+  }
+}
+
+// ========================================================================
+// Test 13: updateDataModel deletion
+//
+// v0.9.1 schema: "If omitted, the key at 'path' is removed."
+// v1.0 makes `value` required and spells deletion as an explicit `value: null`.
+// Both must delete — neither may be rejected or stored as a literal null.
+// ========================================================================
+void TestUpdateDataModelDeletion()
+{
+  std::cout << "\n=== Test: updateDataModel Deletion ===" << std::endl;
+
+  auto seed = [](A2uiMessageProcessor& mp, SurfaceModel& s, const char* id) {
+    mp.ProcessLine(std::string(R"({"version":"v0.9","createSurface":{"surfaceId":")") + id +
+                   R"("}})", s);
+    mp.ProcessLine(std::string(R"({"version":"v0.9","updateDataModel":{"surfaceId":")") + id +
+                   R"(","path":"/","value":{"a":1,"b":2}}})", s);
+  };
+
+  {
+    SurfaceModel s;
+    A2uiMessageProcessor mp;
+    seed(mp, s, "del1");
+    bool ok = mp.ProcessLine(
+      R"({"version":"v0.9","updateDataModel":{"surfaceId":"del1","path":"/a"}})", s);
+    ReportTest("v0.9.1: omitted 'value' removes the key",
+               ok && s.GetDataModel().Serialize() == R"({"b":2})",
+               "accepted=" + std::to_string(ok) + " got: " + s.GetDataModel().Serialize());
+  }
+  {
+    SurfaceModel s;
+    A2uiMessageProcessor mp;
+    seed(mp, s, "del2");
+    bool ok = mp.ProcessLine(
+      R"({"version":"v0.9","updateDataModel":{"surfaceId":"del2","path":"/a","value":null}})", s);
+    ReportTest("v1.0: explicit 'value: null' removes the key",
+               ok && s.GetDataModel().Serialize() == R"({"b":2})",
+               "accepted=" + std::to_string(ok) + " got: " + s.GetDataModel().Serialize());
+  }
+  {
+    // An array slot is emptied, not spliced out — later indices must not shift under the
+    // components bound to them.
+    SurfaceModel s;
+    A2uiMessageProcessor mp;
+    mp.ProcessLine(R"({"version":"v0.9","createSurface":{"surfaceId":"del3"}})", s);
+    mp.ProcessLine(R"({"version":"v0.9","updateDataModel":{"surfaceId":"del3","path":"/",)"
+                   R"("value":{"arr":[1,2,3]}}})", s);
+    mp.ProcessLine(R"({"version":"v0.9","updateDataModel":{"surfaceId":"del3","path":"/arr/1"}})", s);
+    ReportTest("deleting an array slot preserves length",
+               s.GetDataModel().Serialize() == R"({"arr":[1,null,3]})",
+               "got: " + s.GetDataModel().Serialize());
+  }
+}
+
+// ========================================================================
+// Test 14: surface id uniqueness
+//
+// Blueprint: "It is an error to receive a createSurface message for a surfaceId
+// that is already active." The id becomes free again after deleteSurface.
+// ========================================================================
+void TestSurfaceIdUniqueness()
+{
+  std::cout << "\n=== Test: Surface ID Uniqueness ===" << std::endl;
+
+  {
+    SurfaceModel s;
+    A2uiMessageProcessor mp;
+    bool first  = mp.ProcessLine(R"({"version":"v0.9","createSurface":{"surfaceId":"u1"}})", s);
+    bool second = mp.ProcessLine(R"({"version":"v0.9","createSurface":{"surfaceId":"u1"}})", s);
+    ReportTest("first createSurface is accepted", first, mp.GetLastError());
+    ReportTest("duplicate createSurface is rejected", !second,
+               "second accepted, lastError='" + mp.GetLastError() + "'");
+  }
+  {
+    SurfaceModel s;
+    A2uiMessageProcessor mp;
+    mp.ProcessLine(R"({"version":"v0.9","createSurface":{"surfaceId":"u2"}})", s);
+    mp.ProcessLine(R"({"version":"v0.9","deleteSurface":{"surfaceId":"u2"}})", s);
+    bool again = mp.ProcessLine(R"({"version":"v0.9","createSurface":{"surfaceId":"u2"}})", s);
+    ReportTest("id is reusable after deleteSurface", again, mp.GetLastError());
+  }
+  {
+    // Two different ids on one processor must not collide.
+    SurfaceModel a, b;
+    A2uiMessageProcessor mp;
+    bool first  = mp.ProcessLine(R"({"version":"v0.9","createSurface":{"surfaceId":"u3"}})", a);
+    bool second = mp.ProcessLine(R"({"version":"v0.9","createSurface":{"surfaceId":"u4"}})", b);
+    ReportTest("distinct surfaceIds both accepted", first && second, mp.GetLastError());
+  }
+}
+
+// ========================================================================
+// Test 15: type coercion + formatString escaping
+// ========================================================================
+void TestCoercionAndEscaping()
+{
+  std::cout << "\n=== Test: Type Coercion & Escaping ===" << std::endl;
+
+  DataModel dm;
+  dm.SetData("/", R"({"t":"TRUE","f":"False","other":"banana","n":5,"z":0})");
+
+  ReportTest("string 'TRUE' coerces to true (case-insensitive)", dm.GetBool("/t"));
+  ReportTest("string 'False' coerces to false", !dm.GetBool("/f"));
+  // Any other string is false even when the caller's fallback is true.
+  ReportTest("arbitrary string coerces to false, not the fallback",
+             !dm.GetBool("/other", true));
+  ReportTest("non-zero number coerces to true", dm.GetBool("/n"));
+  ReportTest("zero coerces to false", !dm.GetBool("/z", true));
+
+  DataContext ctx(dm, "/");
+  ExpressionParser ep;
+  auto eval = [&](const char* json) -> std::string {
+    Dali::Ui::Integration::JsonParser p = Dali::Ui::Integration::JsonParser::New();
+    if(!p.Parse(json)) return "<parse-error>";
+    return ep.Evaluate(*p.GetRoot(), ctx);
+  };
+
+  ReportTest("escaped \\${ renders as a literal ${",
+             eval(R"({"call":"formatString","args":{"value":"cost \\${5}"}})") == "cost ${5}",
+             "got: " + eval(R"({"call":"formatString","args":{"value":"cost \\${5}"}})"));
+  ReportTest("an unescaped ${…} still interpolates",
+             eval(R"({"call":"formatString","args":{"value":"n=${/n}"}})") == "n=5",
+             "got: " + eval(R"({"call":"formatString","args":{"value":"n=${/n}"}})"));
+}
+
+// ========================================================================
+// Test 16: client data model sync (a2uiClientDataModel)
+//
+// A surface created with sendDataModel:true must report its data model back to
+// the agent; one without the flag must contribute nothing.
+// ========================================================================
+void TestClientDataModelSync()
+{
+  std::cout << "\n=== Test: Client Data Model Sync ===" << std::endl;
+
+  {
+    SurfaceGroupModel group;
+    A2uiMessageProcessor mp;
+    SurfaceModel& s = group.GetOrCreateSurface("sync1");
+    mp.ProcessLine(R"({"version":"v0.9","createSurface":{"surfaceId":"sync1"}})", s);
+    mp.ProcessLine(R"({"version":"v0.9","updateDataModel":{"surfaceId":"sync1","path":"/",)"
+                   R"("value":{"email":"a@b.c"}}})", s);
+    ReportTest("no payload when sendDataModel is off",
+               group.GetClientDataModel().empty(), "got: " + group.GetClientDataModel());
+  }
+  {
+    SurfaceGroupModel group;
+    A2uiMessageProcessor mp;
+    SurfaceModel& s = group.GetOrCreateSurface("sync2");
+    mp.ProcessLine(
+      R"({"version":"v0.9","createSurface":{"surfaceId":"sync2","sendDataModel":true}})", s);
+    mp.ProcessLine(R"({"version":"v0.9","updateDataModel":{"surfaceId":"sync2","path":"/",)"
+                   R"("value":{"email":"a@b.c"}}})", s);
+    const std::string expected =
+      std::string(R"({"version":")") + A2UI_PROTOCOL_VERSION +
+      R"(","surfaces":{"sync2":{"email":"a@b.c"}}})";
+    ReportTest("sendDataModel surface reports its data model",
+               group.GetClientDataModel() == expected, "got: " + group.GetClientDataModel());
+  }
+}
+
+// ========================================================================
+// Test 12: v1.0 forward-compatible message shapes
+//
+// v1.0 renames createSurface.theme to surfaceProperties, lets createSurface carry the
+// initial components/dataModel inline, and makes `value` required in updateDataModel
+// with an explicit null meaning "delete the key at this path". All are accepted
+// alongside the v0.9 spellings, which keep working.
+// ========================================================================
+
+void TestSurfaceProperties()
+{
+  std::cout << "\n=== Test: createSurface surfaceProperties (v1.0 name) ===" << std::endl;
+
+  A2uiMessageProcessor processor;
+  SurfaceModel surface;
+
+  bool ok = processor.ProcessLine(
+    R"({"version":"v1.0","createSurface":{"surfaceId":"sp","catalogId":"basic",)"
+    R"("surfaceProperties":{"width":480,"height":1280,"pattern":"card","agentDisplayName":"A"}}})",
+    surface);
+
+  ReportTest("createSurface with surfaceProperties parsed", ok,
+             ok ? "" : processor.GetLastError());
+  ReportTest("surfaceProperties width applied", surface.GetPreferWidth() == 480.0f,
+             "got " + std::to_string(surface.GetPreferWidth()));
+  ReportTest("surfaceProperties pattern applied", surface.GetPattern() == "card",
+             "got '" + surface.GetPattern() + "'");
+
+  // The v0.9 `theme` spelling must keep working.
+  A2uiMessageProcessor legacy;
+  SurfaceModel legacySurface;
+  legacy.ProcessLine(
+    R"({"version":"v0.9","createSurface":{"surfaceId":"th","catalogId":"basic",)"
+    R"("theme":{"width":320,"height":640,"pattern":"plain"}}})",
+    legacySurface);
+  ReportTest("legacy theme still applied", legacySurface.GetPreferWidth() == 320.0f,
+             "got " + std::to_string(legacySurface.GetPreferWidth()));
+}
+
+void TestInlineCreateSurface()
+{
+  std::cout << "\n=== Test: createSurface with inline components/dataModel ===" << std::endl;
+
+  A2uiMessageProcessor processor;
+  SurfaceModel surface;
+
+  bool ok = processor.ProcessLine(
+    R"({"version":"v1.0","createSurface":{"surfaceId":"inline","catalogId":"basic",)"
+    R"("dataModel":{"title":"Inline UI"},)"
+    R"("components":[{"id":"root","component":"Text","text":{"path":"/title"}}]}})",
+    surface);
+
+  ReportTest("inline createSurface parsed", ok, ok ? "" : processor.GetLastError());
+  ReportTest("inline components populated the tree", surface.GetComponentCount() == 1,
+             "count=" + std::to_string(surface.GetComponentCount()));
+
+  const auto* root = surface.GetComponentsModel().GetRoot();
+  ReportTest("inline root is the Text component", root && root->type == "Text",
+             root ? "got: " + root->type : "no root");
+  ReportTest("inline dataModel populated",
+             surface.GetDataModel().GetString("/title") == "Inline UI",
+             "got '" + surface.GetDataModel().GetString("/title") + "'");
+}
+
+void TestNullValueDeletes()
+{
+  std::cout << "\n=== Test: updateDataModel value:null deletes the key ===" << std::endl;
+
+  A2uiMessageProcessor processor;
+  SurfaceModel surface;
+  processor.ProcessLine(
+    R"({"version":"v0.9","createSurface":{"surfaceId":"del","catalogId":"basic"}})", surface);
+  processor.ProcessLine(
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"del","path":"/","value":{"keep":"a","drop":"b"}}})",
+    surface);
+
+  ReportTest("precondition: both keys present",
+             surface.GetDataModel().GetString("/drop") == "b");
+
+  bool ok = processor.ProcessLine(
+    R"({"version":"v1.0","updateDataModel":{"surfaceId":"del","path":"/drop","value":null}})",
+    surface);
+
+  ReportTest("value:null accepted", ok, ok ? "" : processor.GetLastError());
+  ReportTest("key at path removed",
+             surface.GetDataModel().ResolvePath("/drop") == nullptr,
+             "still resolves");
+  ReportTest("sibling key untouched",
+             surface.GetDataModel().GetString("/keep") == "a",
+             "got '" + surface.GetDataModel().GetString("/keep") + "'");
+
+  // `value` remains required — omitting it is a schema error, not a delete.
+  bool missing = processor.ProcessLine(
+    R"({"version":"v1.0","updateDataModel":{"surfaceId":"del","path":"/keep"}})", surface);
+  ReportTest("omitted value still rejected", !missing);
+}
+
+// ========================================================================
+// Test 13: the built-in @index function
+//
+// Returns the 0-based iteration index inside a list template, plus an optional
+// offset. Outside a collection scope it must not evaluate.
+// ========================================================================
+
+void TestIndexFunction()
+{
+  std::cout << "\n=== Test: @index built-in ===" << std::endl;
+
+  DataModel model;
+  model.SetData("/", R"({"items":["a","b","c"]})");
+  ExpressionParser parser;
+
+  Dali::Ui::Integration::JsonParser jp = Dali::Ui::Integration::JsonParser::New();
+  jp.Parse(R"({"plain":{"call":"@index","args":{}},)"
+           R"("offset":{"call":"@index","args":{"offset":1}}})");
+  const TreeNode* plain  = jp.GetRoot()->Find("plain");
+  const TreeNode* offset = jp.GetRoot()->Find("offset");
+
+  DataContext root(model);
+  DataContext item1 = root.CreateChildContext("/items/1");
+
+  ReportTest("@index inside a collection scope returns the index",
+             parser.Evaluate(*plain, item1) == "1",
+             "got '" + parser.Evaluate(*plain, item1) + "'");
+
+  ReportTest("@index applies the offset argument",
+             parser.Evaluate(*offset, item1) == "2",
+             "got '" + parser.Evaluate(*offset, item1) + "'");
+
+  DataContext item0 = root.CreateChildContextForIndex(0);
+  ReportTest("@index is 0-based",
+             parser.Evaluate(*plain, item0) == "0",
+             "got '" + parser.Evaluate(*plain, item0) + "'");
+
+  ReportTest("@index outside a collection scope does not evaluate",
+             parser.Evaluate(*plain, root).empty(),
+             "got '" + parser.Evaluate(*plain, root) + "'");
+}
+
+// ========================================================================
 // Main
 // ========================================================================
 
@@ -754,6 +1105,15 @@ int main(int argc, char** argv)
   TestActionEnvelopeConformance();
   TestCallFunctionEnvelope();
   TestMimeType();
+  TestSurfaceProperties();
+  TestInlineCreateSurface();
+  TestNullValueDeletes();
+  TestIndexFunction();
+  TestJsonPointerAutoTyping();
+  TestUpdateDataModelDeletion();
+  TestSurfaceIdUniqueness();
+  TestCoercionAndEscaping();
+  TestClientDataModelSync();
 
   // Summary
   std::cout << "\n========================================" << std::endl;

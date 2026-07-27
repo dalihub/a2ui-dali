@@ -162,6 +162,21 @@ bool A2uiMessageProcessor::OnCreateSurface(const TreeNode& msgBody, SurfaceModel
   std::string catalogId = (catalogIdNode && catalogIdNode->GetType() == TreeNode::STRING)
                           ? catalogIdNode->GetString() : "basic";
 
+  // A surfaceId is unique for the whole client session: re-creating one that is still
+  // active means the stream is out of step (a dropped deleteSurface, or two agents sharing
+  // an id). Silently recreating it would hide that, so it is reported as a failure.
+  //
+  // The bookkeeping lives here rather than on SurfaceModel::IsCreated(), because the host
+  // pre-creates a SurfaceModel for whatever id a line mentions — so "the model exists" is
+  // true even for the first createSurface. Only messages actually seen by this processor
+  // count as having activated a surface.
+  if(!mActiveSurfaceIds.insert(surfaceId).second)
+  {
+    mLastError = "createSurface for already active surfaceId '" + surfaceId + "'";
+    DALI_LOG_ERROR("[A2UI] %s\n", mLastError.c_str());
+    return false;
+  }
+
   surface.Create(surfaceId, catalogId);
 
   // Phase 2: sendDataModel flag
@@ -237,10 +252,18 @@ bool A2uiMessageProcessor::OnUpdateDataModel(const TreeNode& msgBody, SurfaceMod
     path = pathNode->GetString();
   }
 
-  if(!valueNode)
+  // Deletion. v0.9.1 spells it as an omitted `value` ("If omitted, the key at 'path' is
+  // removed"); v1.0 makes `value` required and spells the same intent as an explicit
+  // `value: null`. Both are accepted so a stream from either generation deletes rather
+  // than being rejected or leaving a null behind.
+  if(!valueNode || valueNode->GetType() == TreeNode::IS_NULL)
   {
-    mLastError = "updateDataModel missing 'value'";
-    return false;
+    if(!surface.GetDataModel().DeleteAtPath(path))
+    {
+      mLastError = "updateDataModel could not remove '" + path + "'";
+      return false;
+    }
+    return true;
   }
 
   surface.UpdateDataModel(path, *valueNode);
@@ -249,6 +272,17 @@ bool A2uiMessageProcessor::OnUpdateDataModel(const TreeNode& msgBody, SurfaceMod
 
 bool A2uiMessageProcessor::OnDeleteSurface(const TreeNode& msgBody, SurfaceModel& surface)
 {
+  // The id is free again: a later createSurface for it is a fresh surface, not a duplicate.
+  const TreeNode* surfaceIdNode = msgBody.Find("surfaceId");
+  if(surfaceIdNode && surfaceIdNode->GetType() == TreeNode::STRING)
+  {
+    mActiveSurfaceIds.erase(surfaceIdNode->GetString());
+  }
+  else
+  {
+    mActiveSurfaceIds.erase(surface.GetSurfaceId());
+  }
+
   surface.Delete();
   return true;
 }

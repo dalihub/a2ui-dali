@@ -5,6 +5,79 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] — 2026-07-27
+
+Closes the gaps found by auditing the renderer against the upstream A2UI module blueprints
+(`blueprints/modules/a2ui_core.blueprint.md`). Six data-layer rules were not implemented
+the way the specification and the reference `web_core` implementation define them; the most
+consequential is that **a data-model key could not be deleted by any means**. One change is
+a behaviour break for embedders — a duplicate `createSurface` is now rejected — which is
+why this is a minor bump. Rendering is untouched: the 29-screen gallery corpus is
+pixel-identical to 0.14.0.
+
+### Fixed
+
+- **`updateDataModel` can delete again.** v0.9.1 spells a deletion as an omitted `value`
+  ("If omitted, the key at `path` is removed"); the message was instead **rejected** as
+  malformed. v1.0 spells the same intent as an explicit `value: null`; that was **stored as
+  a literal null**. Both forms now remove the key, so an agent dropping an item from a list
+  or clearing a field actually clears it. An array slot is emptied rather than spliced out,
+  keeping the array's length so later indices — and the components bound to them — do not
+  shift. New `DataModel::DeleteAtPath()` is the underlying primitive.
+- **A numeric path segment auto-creates an Array, not an Object.** Writing `/items/0/name`
+  into a model with no `/items` produced `{"items":{"0":{…}}}`, which every data-driven
+  list bound to `/items` then failed to read. It now produces `{"items":[{…}]}`, matching
+  the JSON Pointer auto-typing rule and `web_core`. An index past the end pads the array
+  with empty slots instead of shifting the value down.
+- **A Button's `checks` now disable it.** The specification is explicit: "Buttons can also
+  define `checks`. If any check fails, the button is automatically disabled." `checks` were
+  only ever wired to `TextField` and `DateTimeInput` for their inline error text, so a
+  submit button stayed live and fired its action while the form was invalid. A Button (and
+  a clickable Card) with failing rules is now rendered disabled and neither tap nor the
+  remote's OK key dispatches; it re-enables reactively as soon as the data satisfies the
+  rules. Where a Card borrows its action from a descendant, the gate follows the component
+  that declares the rules, so a card tap cannot bypass a disabled Button inside it.
+- **`\${` renders as a literal `${`.** The escape defined by the basic catalog was not
+  implemented: `formatString` consumed the sequence and dropped the rest of the token, so
+  `cost \${5}` printed as `cost \`. Escaped tokens are now left as text — and are no longer
+  registered as data-model dependencies.
+- **Type coercion follows the standard.** `GetBool` matched `"true"`/`"false"`
+  case-sensitively and ignored numbers entirely, returning the caller's fallback instead.
+  `"TRUE"` is now true, any other string is false (previously an arbitrary string could
+  read as true when the caller passed `fallback=true`), a non-zero number is true and zero
+  is false.
+
+### Added
+
+- **`a2uiClientDataModel` is actually sent.** `sendDataModel: true` was parsed and carried
+  as far as the action dispatcher but never used, so an agent that asked for the surface's
+  state received nothing. `SurfaceGroupModel::GetClientDataModel()` returns the
+  `{"version":…,"surfaces":{…}}` payload for every surface with the flag set, and the A2A
+  example transport attaches it to outgoing message metadata via the new
+  `A2aTransportAdapter::SetClientDataModelProvider()`. The provider is called on the caller's
+  thread and snapshotted before the request reaches the worker, so it never reads the data
+  model while the UI is writing to it.
+- `A2uiHost::Reset()` / `A2uiMessageProcessor::Reset()` — start a fresh A2UI session. A host
+  that replays a stream it has already shown (a screen browser stepping back to an earlier
+  example) needs this, since surface ids are unique per session.
+
+### Changed
+
+- **A duplicate `createSurface` is now an error.** A `surfaceId` is unique per client
+  session; re-creating one that is still active used to silently recreate the surface,
+  hiding a stream that had lost a `deleteSurface`. The processor now rejects it and reports
+  it through `GetLastError()`. The id is free again after `deleteSurface`. **Embedders that
+  re-feed a previously shown stream must call `A2uiHost::Reset()` first** — the bundled
+  gallery demo does this when switching screens.
+
+### Compatibility
+
+- No change to the on-the-wire format, the component catalog, or the rendered output. Still
+  builds against `dali-ui v2.5.30.10913` with `dali2-core`/`dali2-adaptor` `dali_2.5.31`.
+- Verification: conformance **119/119** (up from 99 — 20 new checks covering auto-typing,
+  deletion, surface-id uniqueness, coercion, escaping and data-model sync), streaming render
+  **82/82**, and the 29-screen gallery corpus **29/29 pixel-identical** to 0.14.0.
+
 ## [0.13.0] — 2026-07-22
 
 Automated release tracking **dali-ui v2.5.30.10913** (with `dali2-core` / `dali2-adaptor` `dali_2.5.31`).
