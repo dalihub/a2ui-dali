@@ -31,6 +31,8 @@
 #include "../src/core/a2ui-message-processor.h"
 #include "../src/core/data-model.h"
 #include "../src/core/surface-model.h"
+#include "../src/core/action-dispatcher.h"
+#include "../src/core/a2ui-protocol.h"
 
 #include <dali-ui-foundation/integration-api/builder/json-parser.h>
 #include <fstream>
@@ -554,6 +556,175 @@ void TestDataModelObservers()
 }
 
 // ========================================================================
+// Test 9: Renderer-to-agent `action` envelope conformance
+//
+// The v0.9/v0.9.1/v1.0 renderer_to_agent schema names this message `action`
+// (`userAction` is v0.8 only) and requires
+// name / surfaceId / sourceComponentId / timestamp / context, plus `version`.
+// ========================================================================
+
+void DispatchFixtureAction(const char* componentActionJson,
+                           std::string& emittedOut)
+{
+  Dali::Ui::Integration::JsonParser parser = Dali::Ui::Integration::JsonParser::New();
+  if(!parser.Parse(componentActionJson)) return;
+
+  const Dali::Ui::Integration::TreeNode* root = parser.GetRoot();
+  if(!root) return;
+  const Dali::Ui::Integration::TreeNode* actionNode = root->Find("action");
+  if(!actionNode) return;
+
+  SurfaceModel surface;
+  DataContext  ctx(surface.GetDataModel());
+
+  ActionDispatcher dispatcher;
+  dispatcher.SetSurfaceId("surface-1");
+  dispatcher.SetSendCallback([&emittedOut](const std::string& json) { emittedOut = json; });
+  dispatcher.Dispatch(*actionNode, "submit_btn", ctx);
+}
+
+void TestActionEnvelopeConformance()
+{
+  std::cout << "\n=== Test: Renderer-to-Agent `action` Envelope ===" << std::endl;
+
+  std::string emitted;
+  DispatchFixtureAction(
+    R"({"action":{"event":{"name":"submit_form","context":{"note":"hello"}}}})",
+    emitted);
+
+  ReportTest("action dispatched", !emitted.empty(), "nothing emitted");
+  if(emitted.empty()) return;
+
+  ReportTest("envelope key is \"action\" (not v0.8 \"userAction\")",
+             emitted.find("\"action\":{") != std::string::npos &&
+               emitted.find("userAction") == std::string::npos,
+             "got: " + emitted);
+
+  ReportTest("envelope carries \"version\"",
+             emitted.find("\"version\":\"v0.9\"") != std::string::npos,
+             "got: " + emitted);
+
+  ReportTest("action carries required \"timestamp\"",
+             emitted.find("\"timestamp\":\"") != std::string::npos,
+             "got: " + emitted);
+
+  ReportTest("action carries name/surfaceId/sourceComponentId",
+             emitted.find("\"name\":\"submit_form\"") != std::string::npos &&
+               emitted.find("\"surfaceId\":\"surface-1\"") != std::string::npos &&
+               emitted.find("\"sourceComponentId\":\"submit_btn\"") != std::string::npos,
+             "got: " + emitted);
+
+  ReportTest("resolved context preserved",
+             emitted.find("\"context\":{\"note\":\"hello\"}") != std::string::npos,
+             "got: " + emitted);
+
+  // `context` is required by the schema, so it must be emitted (as {}) even when
+  // the component's action declares none.
+  std::string noContext;
+  DispatchFixtureAction(R"({"action":{"event":{"name":"ping"}}})", noContext);
+  ReportTest("context emitted even when component declares none",
+             noContext.find("\"context\":{}") != std::string::npos,
+             "got: " + noContext);
+}
+
+// ========================================================================
+// Test 10: `callFunction` envelope field positions
+//
+// Spec shape: functionCallId and wantResponse are siblings of `callFunction`
+// at the envelope level; only call/args live inside the body.
+// ========================================================================
+
+void TestCallFunctionEnvelope()
+{
+  std::cout << "\n=== Test: callFunction Envelope Field Positions ===" << std::endl;
+
+  A2uiMessageProcessor processor;
+  ExpressionParser     exprParser;
+  processor.SetExpressionParser(&exprParser);
+
+  std::string capturedId;
+  std::string capturedValue;
+  int         responseCount = 0;
+  processor.SetFunctionResponseCallback(
+    [&](const std::string& id, const std::string& value) {
+      capturedId    = id;
+      capturedValue = value;
+      responseCount++;
+    });
+
+  SurfaceModel surface;
+  processor.ProcessLine(
+    R"({"version":"v0.9","createSurface":{"surfaceId":"fn-test","catalogId":"basic"}})",
+    surface);
+
+  bool ok = processor.ProcessLine(
+    R"({"version":"v0.9","functionCallId":"fc_001","wantResponse":true,)"
+    R"("callFunction":{"call":"formatString","args":{"value":"hi"}}})",
+    surface);
+
+  ReportTest("callFunction (spec envelope) parsed", ok,
+             ok ? "" : processor.GetLastError());
+
+  ReportTest("wantResponse read from envelope → response sent once",
+             responseCount == 1,
+             "responseCount=" + std::to_string(responseCount));
+
+  ReportTest("functionCallId read from envelope",
+             capturedId == "fc_001",
+             "got: '" + capturedId + "'");
+
+  ReportTest("function actually evaluated",
+             capturedValue == "hi",
+             "got: '" + capturedValue + "'");
+
+  // wantResponse defaults to false → no response message.
+  int quietCount = 0;
+  A2uiMessageProcessor quiet;
+  quiet.SetExpressionParser(&exprParser);
+  quiet.SetFunctionResponseCallback(
+    [&](const std::string&, const std::string&) { quietCount++; });
+  SurfaceModel quietSurface;
+  quiet.ProcessLine(
+    R"({"version":"v0.9","createSurface":{"surfaceId":"fn-quiet","catalogId":"basic"}})",
+    quietSurface);
+  quiet.ProcessLine(
+    R"({"version":"v0.9","functionCallId":"fc_002",)"
+    R"("callFunction":{"call":"formatString","args":{"value":"x"}}})",
+    quietSurface);
+  ReportTest("no response when wantResponse absent", quietCount == 0,
+             "quietCount=" + std::to_string(quietCount));
+}
+
+// ========================================================================
+// Test 11: A2UI media type
+//
+// IANA convention (upstream commit c712e0fe) → "application/a2ui+json".
+// The pre-IANA spelling must still be accepted on receive for interop with
+// agents that have not migrated.
+// ========================================================================
+
+void TestMimeType()
+{
+  std::cout << "\n=== Test: A2UI Media Type ===" << std::endl;
+
+  ReportTest("outgoing media type is application/a2ui+json",
+             std::string(A2UI_MIME_TYPE) == "application/a2ui+json",
+             std::string("got: ") + A2UI_MIME_TYPE);
+
+  ReportTest("accepts canonical application/a2ui+json",
+             IsA2uiMimeType("application/a2ui+json"));
+
+  ReportTest("accepts legacy application/json+a2ui",
+             IsA2uiMimeType("application/json+a2ui"));
+
+  ReportTest("rejects unrelated media type",
+             !IsA2uiMimeType("text/plain"));
+
+  ReportTest("unlabelled part treated as A2UI",
+             IsA2uiMimeType(nullptr));
+}
+
+// ========================================================================
 // Main
 // ========================================================================
 
@@ -580,6 +751,9 @@ int main(int argc, char** argv)
   TestDeleteSurface(dataDir);
   TestDataModelArrayWrites();
   TestDataModelObservers();
+  TestActionEnvelopeConformance();
+  TestCallFunctionEnvelope();
+  TestMimeType();
 
   // Summary
   std::cout << "\n========================================" << std::endl;

@@ -14,8 +14,10 @@
  */
 
 #include "action-dispatcher.h"
+#include "a2ui-protocol.h"
 #include <sstream>
 #include <cstring>
+#include <ctime>
 
 using Dali::Ui::Integration::TreeNode;
 
@@ -39,6 +41,22 @@ void EscapeJsonStr(std::ostringstream& oss, const std::string& str)
     }
   }
 }
+
+/// ISO 8601 UTC timestamp ("2026-07-27T09:15:03Z") — the format the
+/// renderer_to_agent schema requires for `action.timestamp`.
+std::string IsoTimestampUtc()
+{
+  std::time_t now = std::time(nullptr);
+  std::tm     utc{};
+#if defined(_WIN32)
+  gmtime_s(&utc, &now);
+#else
+  gmtime_r(&now, &utc);
+#endif
+  char buf[32];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &utc);
+  return buf;
+}
 } // anonymous namespace
 
 void ActionDispatcher::Dispatch(const TreeNode& actionNode,
@@ -54,21 +72,26 @@ void ActionDispatcher::Dispatch(const TreeNode& actionNode,
 
   std::string actionName = nameNode->GetString();
 
-  // Build A2UI ClientEvent payload. The key is "userAction" to match the
-  // ADK sample (restaurant_finder/agent_executor.py extracts
-  // `data["userAction"]`). Some earlier drafts of the spec used "action" —
-  // align with the upstream sample here.
+  // Build the renderer-to-agent event envelope. The message key is `action`
+  // (`userAction` is the v0.8 spelling); name / surfaceId / sourceComponentId /
+  // timestamp / context are all required by the schema.
   std::ostringstream oss;
-  oss << "{\"userAction\":{";
+  oss << "{\"version\":\"" << A2UI_PROTOCOL_VERSION << "\",\"action\":{";
   oss << "\"name\":\""; EscapeJsonStr(oss, actionName); oss << "\"";
   oss << ",\"surfaceId\":\""; EscapeJsonStr(oss, mSurfaceId); oss << "\"";
   oss << ",\"sourceComponentId\":\""; EscapeJsonStr(oss, sourceComponentId); oss << "\"";
+  oss << ",\"timestamp\":\"" << IsoTimestampUtc() << "\"";
 
-  // Resolve context bindings
+  // Resolve context bindings. `context` is required, so an action that declares
+  // none still emits an empty object.
   const TreeNode* contextNode = eventNode->Find("context");
   if(contextNode && contextNode->GetType() == TreeNode::OBJECT)
   {
     oss << ",\"context\":" << BuildContextJson(*contextNode, ctx);
+  }
+  else
+  {
+    oss << ",\"context\":{}";
   }
 
   // wantResponse

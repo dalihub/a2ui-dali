@@ -95,7 +95,7 @@ bool A2uiMessageProcessor::ProcessLine(const std::string& line, SurfaceModel& su
   const TreeNode* callFunction = root->Find("callFunction");
   if(callFunction)
   {
-    return OnCallFunction(*callFunction, surface);
+    return OnCallFunction(*root, *callFunction, surface);
   }
 
   mLastError = "Unknown message type";
@@ -253,19 +253,21 @@ bool A2uiMessageProcessor::OnDeleteSurface(const TreeNode& msgBody, SurfaceModel
   return true;
 }
 
-bool A2uiMessageProcessor::OnCallFunction(const TreeNode& msgBody, SurfaceModel& surface)
+bool A2uiMessageProcessor::OnCallFunction(const TreeNode& envelope, const TreeNode& msgBody,
+                                          SurfaceModel& surface)
 {
-  // Extract functionCallId
-  const TreeNode* callIdNode = msgBody.Find("functionCallId");
+  // Wire shape:
+  //   {"version":"v0.9", "functionCallId":"fc_001", "wantResponse":true,
+  //    "callFunction":{"call":"formatDate", "args":{...}}}
+  // functionCallId and wantResponse sit on the envelope; only call/args are in
+  // the body, where ExpressionParser can consume them directly.
+  const TreeNode* callIdNode = envelope.Find("functionCallId");
   std::string functionCallId;
   if(callIdNode && callIdNode->GetType() == TreeNode::STRING)
   {
     functionCallId = callIdNode->GetString();
   }
 
-  // Extract function call spec — the call spec is directly in msgBody
-  // A2UI v0.9: {"callFunction": {"functionCallId":"fc_001", "call":"formatDate", "args":{...}, "wantResponse":true}}
-  // The "call" + "args" fields are the function spec, directly usable by ExpressionParser
   const TreeNode* callNode = msgBody.Find("call");
   if(!callNode)
   {
@@ -274,8 +276,7 @@ bool A2uiMessageProcessor::OnCallFunction(const TreeNode& msgBody, SurfaceModel&
     return false;
   }
 
-  // Check wantResponse
-  const TreeNode* wantResponseNode = msgBody.Find("wantResponse");
+  const TreeNode* wantResponseNode = envelope.Find("wantResponse");
   bool wantResponse = wantResponseNode && wantResponseNode->GetType() == TreeNode::BOOLEAN
                       && wantResponseNode->GetBoolean();
 

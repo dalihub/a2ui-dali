@@ -91,7 +91,12 @@ private:
                           Dali::Ui::Integration::JsonParser parser);
   bool OnUpdateDataModel(const Dali::Ui::Integration::TreeNode& msgBody, SurfaceModel& surface);
   bool OnDeleteSurface(const Dali::Ui::Integration::TreeNode& msgBody, SurfaceModel& surface);
-  bool OnCallFunction(const Dali::Ui::Integration::TreeNode& msgBody, SurfaceModel& surface);
+  /// @param envelope  The whole message — `functionCallId` and `wantResponse`
+  ///                  are envelope-level siblings of `callFunction`.
+  /// @param msgBody   The `callFunction` body, holding `call` and `args`.
+  bool OnCallFunction(const Dali::Ui::Integration::TreeNode& envelope,
+                      const Dali::Ui::Integration::TreeNode& msgBody,
+                      SurfaceModel& surface);
 
   ExpressionParser* mExprParser = nullptr;
   FunctionResponseCallback mFunctionResponseCb;

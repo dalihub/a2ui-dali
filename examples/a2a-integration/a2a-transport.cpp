@@ -14,6 +14,7 @@
  */
 
 #include "a2a-transport.h"
+#include "core/a2ui-protocol.h"
 #include <dali/integration-api/debug.h>
 #include <dali-ui-foundation/integration-api/builder/json-parser.h>
 #include <curl/curl.h>
@@ -27,7 +28,6 @@ namespace
 {
 
 const char* A2UI_EXTENSION_BASE = "https://a2ui.org/a2a-extension/a2ui";
-const char* A2UI_MIME_TYPE      = "application/json+a2ui";
 
 /**
  * libcurl write callback that appends into a std::string.
@@ -514,7 +514,7 @@ void A2aTransportAdapter::SendActionSync(std::string actionJson)
        <<     "\"messageId\":\"" << GenerateUuid() << "\","
        <<     "\"role\":\"user\","
        <<     "\"parts\":[{\"kind\":\"data\",\"data\":" << actionJson
-       <<        ",\"metadata\":{\"mimeType\":\"" << A2UI_MIME_TYPE << "\"}}],"
+       <<        ",\"metadata\":{\"mimeType\":\"" << A2ui::A2UI_MIME_TYPE << "\"}}],"
        <<     "\"contextId\":\"" << mContextId << "\","
        <<     "\"extensions\":[\"" << extensionUri << "\"],"
        <<     capabilities
@@ -796,7 +796,7 @@ void A2aTransportAdapter::ProcessA2aEvent(const std::string& eventData)
           const TreeNode* mimeType = metadata->Find("mimeType");
           if(mimeType && mimeType->GetType() == TreeNode::STRING)
           {
-            isA2uiPart = (std::string(mimeType->GetString()) == A2UI_MIME_TYPE);
+            isA2uiPart = A2ui::IsA2uiMimeType(mimeType->GetString());
           }
         }
         if(!isA2uiPart) continue;

@@ -32,7 +32,7 @@ namespace A2ui
  * 1. Fetches Agent Card from /.well-known/agent-card.json
  * 2. Sends message/stream via POST /rpc with JSON-RPC envelope
  * 3. Parses SSE status-update events
- * 4. Extracts A2UI DataParts (application/json+a2ui) from agent messages
+ * 4. Extracts A2UI DataParts (application/a2ui+json) from agent messages
  * 5. Forwards extracted A2UI JSON as JSONL lines via OnChunk callback
  *
  * Usage:

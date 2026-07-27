@@ -62,9 +62,25 @@ Automated release tracking **dali-ui v2.5.30.10913** (with `dali2-core` / `dali2
 - **`ClearObservers()` called from inside a notification is deferred** to the end of the
   pass instead of destroying the callback that is running and skipping the observers after
   it.
+- **Renderer-to-agent `action` messages now match the spec.** The outgoing envelope used
+  the v0.8 message key `userAction` and omitted three fields the v0.9/v0.9.1 schema marks
+  required, so spec-conformant agents could not parse it. It is now
+  `{"version":"v0.9","action":{…}}` carrying `name`, `surfaceId`, `sourceComponentId`, an
+  ISO 8601 `timestamp`, and `context` (emitted as `{}` when the component declares none).
+  Agents that only read the old `userAction` key must be updated.
+- **A2UI media type follows the IANA convention.** Payloads are now labelled
+  `application/a2ui+json` instead of `application/json+a2ui`. Incoming DataParts accept
+  either spelling, so agents that have not migrated keep working.
+- **`callFunction` reads `functionCallId` and `wantResponse` from the envelope.** Both were
+  being looked up inside the `callFunction` body, where they never appear, so the call ID
+  was always empty and a requested `functionResponse` was never sent. Only `call` and
+  `args` live in the body.
 
 ### Added
 
+- `src/core/a2ui-protocol.h` — wire-level constants (`A2UI_PROTOCOL_VERSION`,
+  `A2UI_MIME_TYPE`, `A2UI_MIME_TYPE_LEGACY`, `IsA2uiMimeType`) shared by the message layer
+  and the transports.
 - `a2ui-streaming-render-test` — an end-to-end test that drives the real renderer and
   asserts on the real DALi view tree. Every case is fed message-by-message, as one string,
   and as a batched file, and all three must agree; every shipped sample and gallery screen
