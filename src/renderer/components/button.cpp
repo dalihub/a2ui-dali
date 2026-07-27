@@ -3,6 +3,68 @@
 namespace A2ui
 {
 
+namespace
+{
+/// Horizontal padding inside a button, each side (web ≈ 12px). The width formula and the
+/// padding extent must both use it, or the padding eats into the label's content area.
+float ButtonPadX() { return Metrics::Dp(12); }
+
+/**
+ * Size a button and its label to the label's CURRENT text.
+ *
+ * Kept separate from the rest of RenderButton because it has to run more than once. A
+ * DATA-BOUND label is EMPTY when the button is first measured — `createSurface` +
+ * `updateComponents` paint the tree, and the label's value only arrives in a later
+ * `updateDataModel` — and a width measured from "" takes the single-glyph branch below,
+ * so the streamed label ends up rendering inside a 40dp square and clips. Re-running this
+ * from the label's binding is what un-freezes the width.
+ *
+ * Widths are measured in BYTES, as they always were: changing that would move every
+ * already-correct button, and it is a separate question from re-measuring at the right time.
+ *
+ * @return the width the button was given.
+ */
+float SizeButtonToLabel(FlexLayout button, Label labelChild)
+{
+  const float kBtnHeight    = Metrics::ButtonHeight();
+  const float kCharWidth14pt = Metrics::ButtonCharWidth();  // glyph advance at the button font
+  const float kLabelPadding = Metrics::ButtonLabelPad();    // cushion each side inside the button
+
+  Dali::String text    = labelChild.GetText();
+  std::size_t  byteLen = text.Size();
+  const char*  tbytes  = text.CStr();
+  bool         hasNonAscii = false;
+  for(std::size_t i = 0; i < byteLen; ++i)
+    if(static_cast<unsigned char>(tbytes[i]) >= 0x80) { hasNonAscii = true; break; }
+
+  // Only an actual single glyph / emoji / symbol gets the fixed square; short ASCII
+  // words like "Yes"/"No"/"OK" must be sized as text or they clip to a stub ("—").
+  bool isGlyphButton = (byteLen <= 4 && (hasNonAscii || byteLen <= 1));
+  float btnWidth;
+  if(isGlyphButton)
+  {
+    // Single glyph / icon / emoji button → a fixed square so a row of them is
+    // uniform (e.g. music-player prev/play/next); the pill radius = a circle.
+    labelChild.SetRequestedWidth(kBtnHeight);
+    btnWidth = kBtnHeight;
+  }
+  else
+  {
+    // Text button → size to content with a small floor (the reference renderer has no
+    // large MinimumWidth) so e.g. "Sign up" stays snug instead of a wide pill.
+    float labelWidth = static_cast<float>(byteLen) * kCharWidth14pt + kLabelPadding * 2.0f;
+    labelChild.SetRequestedWidth(labelWidth);
+    // The button MUST be the label box + its OWN left/right padding, or the padding eats into
+    // the label's content area and clips the text (a semibold "Purchase" → "Purcha…"; the
+    // previous +Dp(16) was only HALF the 2×Dp(12) padding). 2×ButtonPadX() fits the label
+    // exactly; floor 64dp keeps tiny labels a sane pill width.
+    btnWidth = std::max(Metrics::Dp(64), labelWidth + 2.0f * ButtonPadX());
+  }
+  button.SetRequestedWidth(btnWidth);
+  return btnWidth;
+}
+} // namespace
+
 View A2uiRenderer::RenderButton(const ComponentModel& comp,
                                 const SurfaceComponentsModel& components,
                                 DataContext& ctx)
@@ -18,10 +80,7 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
   // was WRAP_CONTENT. Fixed size + a single container avoids that entirely.
   const float kBtnHeight = Metrics::ButtonHeight();       // 40 (dp-scaled pill)
   const float kBtnMinWidth = Metrics::ButtonMinWidth();   // 140
-  const float kCharWidth14pt = Metrics::ButtonCharWidth();// glyph advance at the button font
-  const float kLabelPadding = Metrics::ButtonLabelPad();  // cushion each side inside the button
-  const float    kPadXf = Metrics::Dp(12);   // horizontal padding each side (web ≈ 12px)
-  const uint16_t kPadX = static_cast<uint16_t>(kPadXf);
+  const uint16_t kPadX = static_cast<uint16_t>(ButtonPadX());
   const uint16_t kPadY = static_cast<uint16_t>(Metrics::Dp(8));
 
   FlexLayout button = FlexLayout::New();
@@ -68,36 +127,25 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
       // Grow the label box to fit the full glyph run so text like "Submit
       // Reservation" isn't ellipsized. Button width tracks the label so the
       // padding is uniform on both sides regardless of text length.
-      Dali::String text = labelChild.GetText();
-      std::size_t byteLen = text.Size();
       labelChild.SetMultiLine(false);
       labelChild.SetRequestedHeight(Metrics::Dp(20));
-      // Only an actual single glyph / emoji / symbol gets the fixed square; short ASCII
-      // words like "Yes"/"No"/"OK" must be sized as text or they clip to a stub ("—").
-      const char* tbytes = text.CStr();
-      bool hasNonAscii = false;
-      for(std::size_t i = 0; i < byteLen; ++i)
-        if(static_cast<unsigned char>(tbytes[i]) >= 0x80) { hasNonAscii = true; break; }
-      bool isGlyphButton = (byteLen <= 4 && (hasNonAscii || byteLen <= 1));
-      if(isGlyphButton)
+      btnWidth = SizeButtonToLabel(button, labelChild);
+
+      // The width just measured is the width of the label AS IT IS RIGHT NOW, and a bound
+      // label is empty at this point — its value arrives in a later updateDataModel. Re-measure
+      // when it does, the same way text.cpp re-fits a streamed label's height.
+      //
+      // The watch is registered AFTER the child render above, so the label's own watch sits
+      // ahead of this one in the data model's observer list and has already written the new
+      // text by the time we read it back. WatchBinding is a no-op for a literal label.
+      const ComponentModel* childComp = components.GetComponent(comp.childId);
+      if(childComp && childComp->rawNode)
       {
-        // Single glyph / icon / emoji button → a fixed square so a row of them is
-        // uniform (e.g. music-player prev/play/next); the pill radius = a circle.
-        labelChild.SetRequestedWidth(kBtnHeight);
-        btnWidth = kBtnHeight;
+        WatchBinding(childComp->rawNode->Find("text"), ctx,
+                     [button, labelChild](const std::string&) mutable {
+                       SizeButtonToLabel(button, labelChild);
+                     });
       }
-      else
-      {
-        // Text button → size to content with a small floor (the reference renderer has no
-        // large MinimumWidth) so e.g. "Sign up" stays snug instead of a wide pill.
-        float labelWidth = static_cast<float>(byteLen) * kCharWidth14pt + kLabelPadding * 2.0f;
-        labelChild.SetRequestedWidth(labelWidth);
-        // The button MUST be the label box + its OWN left/right padding, or the padding eats into
-        // the label's content area and clips the text (a semibold "Purchase" → "Purcha…"; the
-        // previous +Dp(16) was only HALF the 2×Dp(12) padding). 2×kPadXf fits the label exactly;
-        // floor 64dp keeps tiny labels a sane pill width.
-        btnWidth = std::max(Metrics::Dp(64), labelWidth + 2.0f * kPadXf);
-      }  // dp padding each side
     }
     else
     {

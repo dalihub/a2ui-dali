@@ -117,6 +117,50 @@ void CollectLabels(View view, std::vector<std::string>& out)
   }
 }
 
+// Every layout decision the renderer made FROM the text — the width each view asked for, plus
+// a label's horizontal alignment — tagged with what the view shows, in the same depth-first
+// order as CollectLabels.
+//
+// Text alone cannot catch these: a button whose label arrived late renders the right string
+// inside a box measured from the empty string it had at first paint, and a streamed paragraph
+// is centred because "" always fits on one line. Both pass the text assertion while the screen
+// is visibly wrong.
+//
+// The REQUESTED width is the right thing to read, not the arranged one: this test never runs a
+// frame, so nothing has been laid out yet and GetSize() is still 0 everywhere. The requested
+// width is the decision the renderer made, and re-measuring is exactly what has to update it.
+void CollectGeometry(View view, std::vector<std::string>& out)
+{
+  if(!view) return;
+  if(!view.GetProperty<bool>(Dali::Actor::Property::VISIBLE)) return;
+  std::string tag = "view";
+  std::string align;
+  if(Label label = Label::DownCast(view))
+  {
+    tag = std::string(label.GetText().CStr());
+    if(tag.empty()) tag = "(empty)";
+    switch(label.GetHorizontalTextAlignment())
+    {
+      case Dali::Ui::Text::Alignment::CENTER: align = "/center"; break;
+      case Dali::Ui::Text::Alignment::END:    align = "/end";    break;
+      default:                                align = "/start";  break;
+    }
+  }
+  else if(ImageView image = ImageView::DownCast(view))
+  {
+    std::string url = image.GetResourceUrl().CStr();
+    std::size_t slash = url.find_last_of('/');
+    tag = "img:" + (slash == std::string::npos ? url : url.substr(slash + 1));
+  }
+  // Round: a width is a device-pixel quantity, and comparing raw floats would fail on
+  // arithmetic noise rather than on a real layout difference.
+  out.push_back(tag + "=" + std::to_string(static_cast<long>(view.GetRequestedWidth() + 0.5f)) + align);
+  for(uint32_t i = 0; i < view.GetChildViewCount(); ++i)
+  {
+    CollectGeometry(view.GetChildViewAt(i), out);
+  }
+}
+
 std::string ReadFile(const std::string& path)
 {
   std::ifstream file(path);
@@ -150,7 +194,8 @@ std::string gImageDir; // repo res/, so Image urls and Icon names resolve to rea
 // across all surfaces once the feed is done.
 std::vector<std::string> Render(const std::string& path, FeedMode mode,
                                 size_t* observersOut = nullptr,
-                                size_t* tapDetectorsOut = nullptr)
+                                size_t* tapDetectorsOut = nullptr,
+                                std::vector<std::string>* geometryOut = nullptr)
 {
   A2ui::A2uiHost host;
   View           root;
@@ -189,6 +234,8 @@ std::vector<std::string> Render(const std::string& path, FeedMode mode,
   }
 
   if(tapDetectorsOut) *tapDetectorsOut = host.GetRenderer().GetTapDetectorCount();
+
+  if(geometryOut) CollectGeometry(root, *geometryOut);
 
   std::vector<std::string> texts;
   CollectLabels(root, texts);
@@ -243,6 +290,21 @@ void RunObserverParity(const std::string& e2eDir, const Case& c)
              "of the same data has " + std::to_string(batchedTaps));
 }
 
+// Same text is not the same screen. A box measured from the value a view held at first paint
+// stays that size after the real value streams in, so the label reads correctly and still
+// clips. Batched (`JsonFeedFile`) renders once with the data already in place, so its geometry
+// is by construction what the payload asks for — the streamed feed must land on the same
+// widths. No hand-written numbers, so this keeps holding as the metrics evolve.
+void RunGeometryParity(const std::string& e2eDir, const Case& c)
+{
+  std::vector<std::string> streamed, batched;
+  Render(e2eDir + c.file, FeedMode::Incremental, nullptr, nullptr, &streamed);
+  Render(e2eDir + c.file, FeedMode::File, nullptr, nullptr, &batched);
+  ReportTest(c.name + " (same widths as a batched feed)", streamed == batched,
+             "streaming laid out " + Join(streamed) + " but a fresh render of the same data "
+             "laid out " + Join(batched));
+}
+
 // Streaming and batched feeds of the same payload must render identically. This
 // is the cheap regression net over every payload the repo ships: it needs no
 // hand-written expectations, so it keeps working as the samples evolve.
@@ -265,10 +327,13 @@ void RunParitySweep(const std::string& title, const std::string& dir)
 
   for(const std::string& name : files)
   {
-    std::vector<std::string> batched   = Render(dir + name, FeedMode::File);
-    std::vector<std::string> streamed  = Render(dir + name, FeedMode::String);
+    std::vector<std::string> batchedGeom, streamedGeom;
+    std::vector<std::string> batched  = Render(dir + name, FeedMode::File,   nullptr, nullptr, &batchedGeom);
+    std::vector<std::string> streamed = Render(dir + name, FeedMode::String, nullptr, nullptr, &streamedGeom);
     ReportTest(title + "/" + name, batched == streamed,
                "batched " + Join(batched) + " but streamed " + Join(streamed));
+    ReportTest(title + "/" + name + " (layout)", batchedGeom == streamedGeom,
+               "batched laid out " + Join(batchedGeom) + " but streamed laid out " + Join(streamedGeom));
   }
 }
 
@@ -337,12 +402,27 @@ void RunAllTests(const std::string& root)
     // A list inside a list: the inner one rebuilds, then the outer one rebuilds over it.
     {"nested template lists", "nested-template-children.jsonl",
      {"a", "b", "c"}},
+
+    // A Button sizes itself to its label. When the label is bound, the label is empty at
+    // first paint, so the button must re-measure when the value streams in — otherwise the
+    // text renders correctly (which is all the assertions above would see) inside a box cut
+    // for the empty string. Four labels, because the button has two size branches and both
+    // have to survive: a long word run, a short ASCII word, a real single glyph (stays a
+    // square), and a literal label (must not move at all).
+    {"button re-measures when its label arrives", "button-label-arrives-later.jsonl",
+     {"Purchase License", "OK", "\xe2\x96\xb6", "Purchase License"}},
   };
 
   std::cout << "\n=== Streaming data binding ===" << std::endl;
   for(const Case& c : cases)
   {
     RunCase(e2eDir, c);
+  }
+
+  std::cout << "\n=== Layout re-measurement ===" << std::endl;
+  for(const Case& c : cases)
+  {
+    RunGeometryParity(e2eDir, c);
   }
 
   std::cout << "\n=== Watch bookkeeping across rebuilds ===" << std::endl;

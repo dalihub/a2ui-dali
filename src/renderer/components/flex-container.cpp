@@ -33,6 +33,33 @@ float TextNaturalWidth(const char* s, std::size_t bytes, float fontSize)
   }
   return units * fontSize + fontSize;
 }
+
+/**
+ * Reserve a SHORT Row label's natural width so a flex-grow sibling cannot squeeze it.
+ *
+ * A short trailing Label (a line-item price, a value, a duration) sitting AFTER a flex-grow
+ * sibling gets its space consumed and clips ("$6.45" → "$6"), so it is pinned to its glyph
+ * width and stopped from shrinking. A long label is left to wrap/shrink as before.
+ *
+ * Split out of the child loop because it has to run more than once: a DATA-BOUND label is
+ * EMPTY at first paint (0 glyphs → no reservation), and without re-running this when the
+ * streamed value lands, the label keeps the WRAP_CONTENT + shrink slot that was measured
+ * for the empty string and the arriving text is squeezed away.
+ *
+ * @return true if the label was pinned (the caller must then not re-apply flex-shrink).
+ */
+bool PinShortRowLabel(Label labelChild, float fontSize)
+{
+  labelChild.SetRequestedWidth(WRAP_CONTENT);
+  Dali::String t      = labelChild.GetText();
+  std::size_t  glyphs = Utf8Len(t.CStr(), t.Size());   // codepoints, not bytes (★★★★★)
+  if(glyphs == 0 || glyphs > 16) return false;
+  // Reserve the glyph-weighted natural width so wide ★ glyphs aren't clipped to "★★★…"
+  // and ASCII values like "$6.45"/"8:09" aren't over-reserved.
+  labelChild.SetRequestedWidth(TextNaturalWidth(t.CStr(), t.Size(), fontSize));
+  labelChild.SetLayoutParams(FlexLayoutParams::New().SetFlexShrink(0.0f));
+  return true;
+}
 } // namespace
 
 View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
@@ -352,14 +379,27 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
         // default text-align:left — so a SHORT (one-line) label looks centred while a WRAPPED
         // paragraph stays left (the user-profile bio). Match that: centre the glyphs only when
         // the label fits on one line; let a multi-line label keep its default (left) alignment.
-        Dali::String ltxt = labelChild.GetText();
         float lfs = (childComp && childComp->rawNode)
                       ? VariantToFontSize(GetNodeString(*childComp->rawNode, "variant", "body"))
                       : Metrics::FontBody();
-        float naturalW = TextNaturalWidth(ltxt.CStr(), ltxt.Size(), lfs);  // glyph-weighted, not bytes
         float budget   = (mTextWidthBudget > 0.0f) ? mTextWidthBudget : Metrics::CardContentWidth();
-        if(naturalW <= budget)
-          labelChild.SetHorizontalTextAlignment(Text::Alignment::CENTER);
+        // This is a decision about the label's TEXT, so it is frozen for a bound label the same
+        // way a width is: an empty string always "fits on one line", so a streamed paragraph
+        // stays centred forever. Re-decide when the value lands. Falling back to the alignment
+        // the label already had (rather than to START) keeps a message-declared `align` intact.
+        Text::Alignment declared = labelChild.GetHorizontalTextAlignment();
+        auto centreIfItFitsOneLine = [labelChild, lfs, budget, declared]() mutable {
+          Dali::String t = labelChild.GetText();
+          float naturalW = TextNaturalWidth(t.CStr(), t.Size(), lfs);  // glyph-weighted, not bytes
+          labelChild.SetHorizontalTextAlignment(naturalW <= budget ? Text::Alignment::CENTER
+                                                                   : declared);
+        };
+        centreIfItFitsOneLine();
+        if(childComp && childComp->rawNode)
+        {
+          WatchBinding(childComp->rawNode->Find("text"), ctx,
+                       [centreIfItFitsOneLine](const std::string&) mutable { centreIfItFitsOneLine(); });
+        }
       }
       std::string ct = childComp ? childComp->type : std::string();
       bool fullWidth = labelChild || ct == "TextField" || ct == "Slider" ||
@@ -454,21 +494,21 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
           Label labelChild = Label::DownCast(child);
           if(labelChild)
           {
-            labelChild.SetRequestedWidth(WRAP_CONTENT);
-            // A short trailing Label (line-item price, value, duration) sitting AFTER a
-            // flex-grow sibling gets its space consumed and clips (e.g. "$6.45" → "$6").
-            // Reserve a width from the glyph count and stop it shrinking so it stays intact.
-            Dali::String t = labelChild.GetText();
-            std::size_t glyphs = Utf8Len(t.CStr(), t.Size());   // codepoints, not bytes (★★★★★)
-            if(glyphs > 0 && glyphs <= 16)
+            float fs = (childComp && childComp->rawNode)
+              ? VariantToFontSize(GetNodeString(*childComp->rawNode, "variant", "body")) : Metrics::FontBody();
+            pinned = PinShortRowLabel(labelChild, fs);
+            // The reservation above measured the label AS IT IS RIGHT NOW, and a bound label is
+            // empty at this point — its value arrives in a later updateDataModel. Re-measure when
+            // it does, or the streamed value lands in the slot cut for the empty string and a
+            // flex-grow sibling squeezes it away. Registered after the child render, so the
+            // label's own watch has already written the new text by the time we read it back.
+            // WatchBinding is a no-op for a literal label, which cannot change.
+            if(childComp && childComp->rawNode)
             {
-              float fs = (childComp && childComp->rawNode)
-                ? VariantToFontSize(GetNodeString(*childComp->rawNode, "variant", "body")) : Metrics::FontBody();
-              // Reserve the glyph-weighted natural width so wide ★ glyphs aren't clipped to "★★★…"
-              // and ASCII values like "$6.45"/"8:09" aren't over-reserved.
-              labelChild.SetRequestedWidth(TextNaturalWidth(t.CStr(), t.Size(), fs));
-              labelChild.SetLayoutParams(FlexLayoutParams::New().SetFlexShrink(0.0f));
-              pinned = true;
+              WatchBinding(childComp->rawNode->Find("text"), ctx,
+                           [labelChild, fs](const std::string&) mutable {
+                             PinShortRowLabel(labelChild, fs);
+                           });
             }
           }
           else if(childType == "Image")
