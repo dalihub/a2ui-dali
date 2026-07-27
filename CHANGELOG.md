@@ -5,25 +5,16 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.15.1] — 2026-07-27
-
-Corrects the 0.15.0 release, which shipped a test suite it could not pass.
-
-### Fixed
-
-- Removed four conformance tests that entered the 0.15.0 commit by mistake. They cover
-  `createSurface.surfaceProperties`, an inline `createSurface` payload, and the `@index`
-  built-in — v1.0 features whose implementation is not part of this release — so 0.15.0
-  reported 128/136. One of them also asserted that an `updateDataModel` with an omitted
-  `value` is rejected, which contradicts the v0.9.1 deletion rule this release implements.
-  The suite is 119/119 again. No source change: 0.15.0's renderer and library code were
-  correct and are unchanged here.
-
-## [Unreleased]
+## [0.16.0] — 2026-07-27
 
 Adds the A2UI **v1.0 candidate** features the renderer was missing, and fixes a deletion
 bug the new tests exposed. Everything added here is additive: v0.9 payloads take the same
 paths they did before, and the 29-screen gallery corpus is pixel-identical to 0.15.1.
+
+v1.0 is a release candidate — the upstream reference web renderers still ship only v0_8 and
+v0_9 — so nothing here switches the renderer over to it. Each feature is accepted alongside
+its v0.9 spelling, which continues to work unchanged; this release makes a v1.0 payload
+render, it does not make v0.9 stop rendering. No a2ui-dali C++ API changes.
 
 ### Fixed
 
@@ -55,6 +46,29 @@ paths they did before, and the 29-screen gallery corpus is pixel-identical to 0.
 - **`a2uiRendererCapabilities` / `a2uiRendererDataModel` A2A metadata.** v1.0 renamed these
   keys (client → renderer). Both spellings are now sent with identical values, so an agent
   on either version finds the key it looks for.
+
+### Compatibility
+
+- No change to the rendered output, the component catalog, or the v0.9 wire format. Still
+  builds against `dali-ui v2.5.30.10913` with `dali2-core`/`dali2-adaptor` `dali_2.5.31`.
+- Verification: conformance **135/135** (16 new checks covering `@index` scoping and its
+  offset, `surfaceProperties`, an inline `createSurface` payload, and both deletion
+  spellings), streaming render **82/82**, and the 29-screen gallery corpus **29/29
+  pixel-identical** to 0.15.1.
+
+## [0.15.1] — 2026-07-27
+
+Corrects the 0.15.0 release, which shipped a test suite it could not pass.
+
+### Fixed
+
+- Removed four conformance tests that entered the 0.15.0 commit by mistake. They cover
+  `createSurface.surfaceProperties`, an inline `createSurface` payload, and the `@index`
+  built-in — v1.0 features whose implementation is not part of this release — so 0.15.0
+  reported 128/136. One of them also asserted that an `updateDataModel` with an omitted
+  `value` is rejected, which contradicts the v0.9.1 deletion rule this release implements.
+  The suite is 119/119 again. No source change: 0.15.0's renderer and library code were
+  correct and are unchanged here.
 
 ## [0.15.0] — 2026-07-27
 
