@@ -39,6 +39,22 @@ public:
   using FunctionImpl = std::function<std::string(const Dali::Ui::Integration::TreeNode& args,
                                                  const DataContext& ctx)>;
 
+  /**
+   * Whether a function resolves "${…}" tokens found inside its own string arguments.
+   *
+   * A2UI restricts interpolation to `formatString`, and the reference renderer follows
+   * suit: a standard function receives already-resolved arguments, so its dependencies
+   * are exactly its {path: …} bindings, while `formatString` is the one implementation
+   * that parses its template and subscribes to what it finds. `No` is therefore the
+   * default — a custom function that does its own interpolation opts in with `Yes` so
+   * that CollectDependencyPaths keeps watching the paths it embeds.
+   */
+  enum class Interpolates
+  {
+    No,
+    Yes
+  };
+
   ExpressionParser();
 
   // Non-copyable (lambdas capture `this`)
@@ -57,18 +73,23 @@ public:
 
   /**
    * Register a custom function.
+   *
+   * @param interpolates  Pass Interpolates::Yes only if @p impl resolves "${…}" tokens
+   *                      inside its own string arguments; see the enum.
    */
-  void RegisterFunction(const std::string& name, FunctionImpl impl);
+  void RegisterFunction(const std::string& name, FunctionImpl impl,
+                        Interpolates interpolates = Interpolates::No);
 
   /**
    * Every data-model path a binding node reads, resolved against @p ctx.
    *
    * A binding is only reactive if we know what it depends on. For a plain
    * {"path": …} that is the path itself, but a FunctionCall hides its inputs:
-   * nested {"path": …} nodes inside `args`, and — because `formatString` embeds
-   * expressions in a string literal — "${…}" tokens that no JSON walk would see.
-   * The spec requires such a call to re-run whenever any of those change, so the
-   * renderer watches every path this returns.
+   * nested {"path": …} nodes inside `args`, and — for a function that interpolates
+   * (see Interpolates) — "${…}" tokens inside a string argument that no JSON walk
+   * would see. The spec requires such a call to re-run whenever any of those change,
+   * so the renderer watches every path this returns. A string argument to any other
+   * function is literal text and contributes nothing, however it is punctuated.
    *
    * @param[in]  node  The binding node (a property value; may be any node type)
    * @param[in]  ctx   Scope used to resolve relative paths (list item scope)
@@ -102,7 +123,24 @@ private:
    */
   std::string ResolveInlineExpression(const std::string& expr, const DataContext& ctx) const;
 
-  std::unordered_map<std::string, FunctionImpl> mFunctions;
+  /**
+   * CollectDependencyPaths, carrying whether "${…}" in a string is an expression here.
+   *
+   * @param[in] scanStrings  False inside the arguments of a function that does not
+   *                         interpolate, where those characters are literal text. Each
+   *                         `call` node recomputes it, so a formatString nested under
+   *                         `and` is scanned again.
+   */
+  void CollectDependencies(const Dali::Ui::Integration::TreeNode& node, const DataContext& ctx,
+                           bool scanStrings, std::vector<std::string>& out) const;
+
+  struct Function
+  {
+    FunctionImpl impl;
+    bool         interpolates;
+  };
+
+  std::unordered_map<std::string, Function> mFunctions;
 };
 
 } // namespace A2ui

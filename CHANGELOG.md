@@ -5,6 +5,28 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **A binding no longer watches paths it reads out of a literal string.** `${…}` is an
+  expression only inside `formatString` — the spec restricts interpolation to that one
+  function, and the reference web renderer follows suit: a standard function receives
+  arguments the context has already resolved, so its dependencies are exactly its
+  `{path: …}` bindings, while `formatString` is the one implementation that parses its
+  template and subscribes to what it finds. `CollectDependencyPaths` scanned *every*
+  string instead, so a regex meant to match a template placeholder
+  (`{"call":"regex","args":{"pattern":"${[a-z]+}"}}`) contributed a watch on `/[a-z]+`,
+  and an unclosed token left one on `/price and ${/other`. Those paths never resolve, so
+  nothing rendered wrong — they only cost a redundant re-evaluation on every model
+  change. The scan now follows the same rule the interpolator does. (#16)
+
+  `ExpressionParser::RegisterFunction` takes a third argument for this:
+  `Interpolates::No` (the default, matching upstream) or `Interpolates::Yes` for a custom
+  function that resolves `${…}` in its own string arguments and needs those paths
+  watched. Existing calls compile unchanged; a custom function that *does* interpolate
+  must now say so to keep its dependencies tracked.
+
 ## [0.16.0] — 2026-07-27
 
 Adds the A2UI **v1.0 candidate** features the renderer was missing, and fixes a deletion

@@ -113,11 +113,13 @@ ExpressionParser::ExpressionParser()
 
   // === Format functions ===
 
+  // The one built-in that reads "${…}" out of a string argument, so the only one whose
+  // arguments CollectDependencyPaths scans for embedded paths.
   RegisterFunction("formatString", [this](const TreeNode& args, const DataContext& ctx) -> std::string {
     std::string value = ResolveArg(args, "value", ctx);
     if(value.empty()) return "";
     return InterpolateString(value, ctx);
-  });
+  }, Interpolates::Yes);
 
   // === Phase 4 validation functions ===
 
@@ -484,12 +486,13 @@ std::string ExpressionParser::Evaluate(const TreeNode& callNode, const DataConte
     return "";
   }
 
-  return it->second(*argsNode, ctx);
+  return it->second.impl(*argsNode, ctx);
 }
 
-void ExpressionParser::RegisterFunction(const std::string& name, FunctionImpl impl)
+void ExpressionParser::RegisterFunction(const std::string& name, FunctionImpl impl,
+                                        Interpolates interpolates)
 {
-  mFunctions[name] = std::move(impl);
+  mFunctions[name] = Function{std::move(impl), interpolates == Interpolates::Yes};
 }
 
 std::string ExpressionParser::ResolveArg(const TreeNode& args, const char* key,
@@ -560,6 +563,14 @@ int ExpressionParser::GetArgInt(const TreeNode& args, const char* key, int fallb
 void ExpressionParser::CollectDependencyPaths(const TreeNode& node, const DataContext& ctx,
                                               std::vector<std::string>& out) const
 {
+  // Nothing interpolates until a call says it does: "${…}" outside formatString is
+  // literal text per the spec, and the renderer never interpolates a bare property.
+  CollectDependencies(node, ctx, false, out);
+}
+
+void ExpressionParser::CollectDependencies(const TreeNode& node, const DataContext& ctx,
+                                           bool scanStrings, std::vector<std::string>& out) const
+{
   auto add = [&out](std::string path) {
     if(path.empty()) return;
     if(std::find(out.begin(), out.end(), path) == out.end()) out.push_back(std::move(path));
@@ -567,10 +578,11 @@ void ExpressionParser::CollectDependencyPaths(const TreeNode& node, const DataCo
 
   if(node.GetType() == TreeNode::STRING)
   {
-    // A formatString template. Take every "${" and read to the next '}': for a nested
-    // "${fn(value:${/b})}" that yields "fn(value:${/b" (a call — its own inner token is
-    // visited separately) and "/b" (the real dependency), mirroring how InterpolateString
-    // resolves innermost-first.
+    if(!scanStrings) return;
+
+    // A formatString template. Take every "${" and read to the next '}', mirroring how
+    // InterpolateString resolves innermost-first: a nested "${fn(value:${/b})}" yields the
+    // partial "fn(value:${/b", which is dropped below, and then "/b" — the real dependency.
     const char* raw = node.GetString();
     std::string str = raw ? raw : "";
     for(std::size_t pos = FindLiveToken(str, 0); pos != std::string::npos;
@@ -584,6 +596,12 @@ void ExpressionParser::CollectDependencyPaths(const TreeNode& node, const DataCo
       std::size_t e = token.find_last_not_of(" \t");
       if(b == std::string::npos) continue;
       token = token.substr(b, e - b + 1);
+
+      // InterpolateString always descends to the innermost "${…}", so a token that still
+      // contains one is never evaluated as an expression — it is the left-over text of an
+      // unclosed token, e.g. "/price and ${/other" from "unmatched ${/price and ${/other}".
+      // The real token follows and is visited on the next iteration.
+      if(token.find("${") != std::string::npos) continue;
 
       if(token[0] == '/')                                 // absolute path
       {
@@ -608,9 +626,24 @@ void ExpressionParser::CollectDependencyPaths(const TreeNode& node, const DataCo
     {
       add(ctx.Resolve(pathNode->GetString()));
     }
+
+    // A call decides the question for its own arguments, whichever way the enclosing one
+    // answered it: a formatString nested in `and` is scanned, a regex nested in a
+    // formatString argument is not. An unregistered name keeps the inherited answer —
+    // Evaluate will report it as unknown rather than silently interpolating.
+    const TreeNode* callNode = node.GetChild("call");
+    const char*     callName = callNode && callNode->GetType() == TreeNode::STRING
+                                 ? callNode->GetString()
+                                 : nullptr;
+    if(callName)
+    {
+      auto fn = mFunctions.find(callName);
+      if(fn != mFunctions.end()) scanStrings = fn->second.interpolates;
+    }
+
     for(auto it = node.CBegin(); it != node.CEnd(); ++it)
     {
-      CollectDependencyPaths((*it).second, ctx, out);
+      CollectDependencies((*it).second, ctx, scanStrings, out);
     }
   }
 }
@@ -757,7 +790,7 @@ std::string ExpressionParser::ResolveInlineExpression(const std::string& expr, c
     const TreeNode* root = parser.GetRoot();
     if(!root) return "";
 
-    return it->second(*root, ctx);
+    return it->second.impl(*root, ctx);
   }
 
   // 3. Simple variable name

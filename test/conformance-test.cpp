@@ -43,6 +43,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <cstdlib>
 
 using namespace A2ui;
@@ -1078,6 +1079,131 @@ void TestIndexFunction()
 }
 
 // ========================================================================
+// Test 14: the paths a binding is watched on
+//
+// "${…}" is an expression only inside a function that interpolates — formatString
+// among the built-ins. Everywhere else those characters are literal text, so a regex
+// pattern must not contribute a watch. The other direction is what would actually
+// break rendering, so every real dependency is asserted too.
+// ========================================================================
+
+void TestDependencyPaths()
+{
+  std::cout << "\n=== Test: Binding Dependency Paths ===" << std::endl;
+
+  DataModel model;
+  model.SetData("/", R"({"code":"A1","price":10,"other":7,"items":[{"n":1},{"n":2}]})");
+
+  ExpressionParser parser;
+  DataContext      root(model);
+
+  // Keeps every JsonParser alive for as long as the TreeNodes it owns are in use.
+  std::vector<Dali::Ui::Integration::JsonParser> parsers;
+
+  auto deps = [&](const char* json, const DataContext& ctx) -> std::vector<std::string> {
+    parsers.push_back(Dali::Ui::Integration::JsonParser::New());
+    if(!parsers.back().Parse(json)) return {"<parse-error>"};
+    std::vector<std::string> out;
+    parser.CollectDependencyPaths(*parsers.back().GetRoot(), ctx, out);
+    std::sort(out.begin(), out.end());
+    return out;
+  };
+  auto show = [](const std::vector<std::string>& v) {
+    std::string s;
+    for(const std::string& p : v) s += (s.empty() ? "" : ", ") + p;
+    return "got [" + s + "]";
+  };
+
+  // A regex meant to match a template placeholder. "${" is regex syntax here, not a
+  // binding, and the pattern is a literal argument of a function that does not interpolate.
+  {
+    auto d = deps(R"({"call":"regex","args":{"value":{"path":"/code"},"pattern":"${[a-z]+}"}})",
+                  root);
+    ReportTest("a regex pattern contributes no interpolation dependency",
+               d == std::vector<std::string>{"/code"}, show(d));
+  }
+
+  // Escaping is the other half of the same rule and predates it: "\${" is literal text
+  // wherever it appears, so it is not a dependency even inside a formatString template.
+  {
+    auto d = deps(R"({"call":"formatString","args":{"value":"cost \\${/price}"}})", root);
+    ReportTest("an escaped \\${ is literal text, not a dependency", d.empty(), show(d));
+  }
+
+  // Regression guard: formatString must keep finding everything it reads.
+  {
+    auto d = deps(R"({"call":"formatString","args":{"value":"${/price} and ${other}"}})", root);
+    ReportTest("formatString collects absolute and bare tokens",
+               d == std::vector<std::string>({"/other", "/price"}), show(d));
+  }
+
+  // A nested call resets the answer, so neither direction leaks into the other.
+  {
+    auto d = deps(R"({"call":"and","args":{"values":[)"
+                  R"({"call":"regex","args":{"value":{"path":"/code"},"pattern":"${[a-z]+}"}},)"
+                  R"({"call":"formatString","args":{"value":"${/price}"}}]}})",
+                  root);
+    ReportTest("formatString nested under `and` is still scanned, the regex beside it is not",
+               d == std::vector<std::string>({"/code", "/price"}), show(d));
+  }
+  {
+    auto d = deps(R"({"call":"formatString","args":{"value":{"path":"/code"},)"
+                  R"("unused":{"call":"regex","args":{"pattern":"${[a-z]+}"}}}})",
+                  root);
+    ReportTest("a regex nested inside formatString args is not scanned",
+               d == std::vector<std::string>{"/code"}, show(d));
+  }
+
+  // An unclosed token leaves text that InterpolateString never evaluates as an expression.
+  {
+    auto d = deps(R"({"call":"formatString","args":{"value":"unmatched ${/price and ${/other}"}})",
+                  root);
+    ReportTest("an unclosed ${ contributes no path, the closed one still does",
+               d == std::vector<std::string>{"/other"}, show(d));
+  }
+
+  // Inline calls: the wrapper token is not a path, its argument is.
+  {
+    auto d = deps(R"({"call":"formatString","args":{"value":"${formatNumber(value:${/price})}"}})",
+                  root);
+    ReportTest("an inline call contributes its argument, not itself",
+               d == std::vector<std::string>{"/price"}, show(d));
+  }
+
+  // A bare token resolves scoped-first with a root fallback, so both are dependencies.
+  {
+    DataContext item = root.CreateCollectionItemContext("/items/1", 1);
+    auto d = deps(R"({"call":"formatString","args":{"value":"${n}"}})", item);
+    ReportTest("a bare token in a list scope watches both the scoped and root path",
+               d == std::vector<std::string>({"/items/1/n", "/n"}), show(d));
+  }
+
+  // A custom function that interpolates by hand opts in; the default stays literal.
+  {
+    auto passthrough = [](const TreeNode&, const DataContext&) { return std::string(); };
+    ExpressionParser custom;
+    custom.RegisterFunction("quiet", passthrough);
+    custom.RegisterFunction("loud", passthrough, ExpressionParser::Interpolates::Yes);
+
+    auto collect = [&](const char* json) {
+      Dali::Ui::Integration::JsonParser jp = Dali::Ui::Integration::JsonParser::New();
+      jp.Parse(json);
+      std::vector<std::string> out;
+      custom.CollectDependencyPaths(*jp.GetRoot(), root, out);
+      return out;
+    };
+
+    auto quiet = collect(R"({"call":"quiet","args":{"value":"${/price}"}})");
+    ReportTest("a custom function does not interpolate by default",
+               quiet.empty(), show(quiet));
+
+    auto loud = collect(R"({"call":"loud","args":{"value":"${/price}"}})");
+    ReportTest("a custom function that declares Interpolates::Yes is scanned",
+               loud == std::vector<std::string>{"/price"}, show(loud));
+  }
+}
+
+// ========================================================================
 // Main
 // ========================================================================
 
@@ -1116,6 +1242,7 @@ int main(int argc, char** argv)
   TestInlineCreateSurface();
   TestNullValueDeletes();
   TestIndexFunction();
+  TestDependencyPaths();
 
   // Summary
   std::cout << "\n========================================" << std::endl;
