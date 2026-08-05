@@ -37,14 +37,23 @@ std::string StripMarkdown(const std::string& in)
   return out;
 }
 
-// Size a Label to its REAL wrapped line count at content width `width`, replacing the
-// pre-layout character estimate once the true geometry (or a newly-arrived bound value) is
-// known. Guarded twice, per the View::LayoutFinishedSignal contract:
+// Size a Label to its REAL wrapped line count at content width `width`.
+//
+// This is the DATA-BINDING repair only: a bound label was measured while its text was still
+// empty, so the slot it holds is one line and the value that arrives later has to re-claim the
+// lines it actually needs. It must NOT be used to "correct" a literal label after layout: the
+// pre-layout estimate in RenderText is the height the renderer draws with by design (it rounds
+// UP, see below), and re-fitting it downward to the true line count shortens every label that
+// reserved a line it did not fill — measured against the golden baseline that moved card
+// bottoms and inter-element seams by a whole line height (02/12/18/22/32/35) and clipped
+// wrapped copy to a single ellipsized line.
+//
+// Guarded twice:
 //   (1) skip while the text has no laid-out lines yet (empty, or a data-bound value that has
 //       not arrived) so we never collapse the one-line slot RenderText reserved for it — the
 //       raw `lineH * GetLineCount()` would resolve to 0 and hide the row;
-//   (2) only write the height when it actually differs, so re-running this inside the settle
-//       signal cannot spin the endless dirty->settled->emit loop the API warns about.
+//   (2) only write the height when it actually differs, so a repeated call cannot spin an
+//       endless invalidate -> re-measure loop.
 void FitLabelHeightToLines(Label label, float width)
 {
   if(width <= 0.0f) return;                 // not laid out yet — the reserved height stands
@@ -114,13 +123,11 @@ View A2uiRenderer::RenderText(const ComponentModel& comp, DataContext& ctx)
     label.SetRequestedHeight(dataBound ? lineH : WRAP_CONTENT);
   }
 
-  // Once layout settles, correct the height to the real wrapped line count (the estimate above
-  // is only a first-paint reservation). Use the arranged width the signal hands us; the guards
-  // live in FitLabelHeightToLines so an empty slot is never collapsed and the settle loop never
-  // spins.
-  label.LayoutFinishedSignal().Connect(this, [](View view, LayoutRect rect) {
-    FitLabelHeightToLines(Label::DownCast(view), rect.width);
-  });
+  // NOTE: do NOT re-fit this height once layout settles (e.g. from View::LayoutFinishedSignal).
+  // The estimate above IS the height the renderer draws with by design — see the contract on
+  // FitLabelHeightToLines. Fitting a literal label down to its true line count shortens every
+  // label that reserved a line it did not fill, which moves card bottoms and inter-element seams
+  // by a whole line height and ellipsizes wrapped copy onto one line (02/12/18/22/32/35).
 
   // Caption/body color hints
   if(strcmp(variant, "caption") == 0)
@@ -210,11 +217,11 @@ View A2uiRenderer::RenderText(const ComponentModel& comp, DataContext& ctx)
       // arrived value so a multi-word streamed value actually wraps — while a single unbroken
       // token (a number/currency cell) still stays on one line, matching the initial-paint rule.
       label.SetMultiLine(shown.find(' ') != std::string::npos);
-      // A value arriving AFTER the first layout settled cannot rely on LayoutFinishedSignal:
-      // SetText only re-runs measure when the height is WRAP_CONTENT, but this label's height
-      // is pinned to a concrete value, so the signal never re-fires and the row would keep its
-      // reserved (or collapsed) height, clipping/hiding the streamed text. Re-fit here — the
-      // height change itself invalidates measure and re-arranges the label at full height.
+      // A value arriving AFTER the first layout settled cannot rely on re-measure: SetText only
+      // re-runs measure when the height is WRAP_CONTENT, but this label's height is pinned to the
+      // one-line reservation made above, so the row would keep that height and clip/hide the
+      // streamed text. Re-fit here — the height change itself invalidates measure and re-arranges
+      // the label at full height. This is the one place the fit is correct (see its contract).
       FitLabelHeightToLines(label, label.GetSize().width);
     });
   }
