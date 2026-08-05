@@ -5,6 +5,23 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] — 2026-08-05
+
+Automated release tracking **dali-ui v2.5.32.10995** (with `dali2-core` / `dali2-adaptor` `dali_2.5.33`).
+
+### Changed
+
+- Literal text labels are no longer re-fitted to their true wrapped line count after layout settles — the `View::LayoutFinishedSignal` connection in `RenderText` was removed, so the pre-layout (round-up) estimate is now the height the renderer draws with.
+- `FitLabelHeightToLines` is now scoped to the data-binding repair only: it runs solely when a bound value arrives after the first layout, where the label's height is pinned to the one-line reservation and would otherwise clip or hide the streamed text.
+- This removes the regression where a label that reserved a line it did not fill was shortened to its real line count, moving card bottoms and inter-element seams by a whole line height and ellipsizing wrapped copy onto a single line (golden cases 02/12/18/22/32/35).
+- The `FitLabelHeightToLines` contract comment now documents both guards (skip while no laid-out lines exist; write the height only when it differs) and states explicitly that post-layout correction of literal labels is not a supported use.
+
+### Compatibility
+
+- Built against `dali-ui v2.5.32.10995` with `dali2-core`/`dali2-adaptor` `dali_2.5.33` on the
+  desktop `dali-env` build. Gallery corpus verified against the previous release
+  (pixel-regression gate + visual judge). Conformance: 145/145.
+
 ## [0.17.0] — 2026-07-27
 
 Two streaming-feed corrections, both of the same shape: a decision taken once, at first
