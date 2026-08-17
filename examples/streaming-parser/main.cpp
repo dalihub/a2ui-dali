@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-// Streaming parser example.
+// Streaming parser example (ThreadManager version).
 //
 //   ./a2ui-streaming-parser [path/to/messages.json]
 //
@@ -22,12 +22,16 @@
 // complete JSON object and dispatches it to an IStreamEventSink implementation
 // that prints the jsonData to stdout.
 //
+// The file reading and chunk-feeding work is posted to a worker thread managed
+// by ThreadManager, demonstrating the thread infrastructure ported from AGenUI.
+// The main thread blocks on a std::promise until the worker finishes, then
+// prints the verification summary.
+//
 // In addition to printing, the sink *verifies* each parsed event: it
 // re-deserializes the jsonData with nlohmann/json, checks that it is valid
 // JSON with the expected top-level key (e.g. "createSurface"), and asserts
 // key fields (version, surfaceId, components array, data model value).
 // After the stream ends, a summary of PASS/FAIL checks is printed.
-
 //
 // StreamingContentParser expects a stream of *individual* A2UI event objects
 // (JSONL-style), not a top-level JSON array.  The sample files under
@@ -41,6 +45,7 @@
 #include "stream/streaming-content-parser.h"
 #include "stream/stream-event-sink.h"
 #include "stream/error-code.h"
+#include "module/thread-manager.h"
 
 #include <nlohmann/json.hpp>
 
@@ -50,6 +55,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <future>
+
 
 namespace
 {
@@ -287,6 +294,13 @@ std::string FlattenJsonArrayToStream(const std::string& raw)
 
 } // namespace
 
+// --- AI-generated section starts --[20260817-222700-]-
+// --- Code Writer: Cline SR
+// --- Designer: (none)
+//
+// Thread ID used for the worker thread that loads and parses the JSON file.
+constexpr int kWorkerThreadId = 1;
+
 int main(int argc, char* argv[])
 {
     // Default sample ships with the repo; allow override via command line.
@@ -296,62 +310,103 @@ int main(int argc, char* argv[])
         jsonPath = argv[1];
     }
 
-    std::cout << "Streaming parser example" << std::endl;
+    std::cout << "Streaming parser example (ThreadManager)" << std::endl;
     std::cout << "Input file: " << jsonPath << std::endl;
     std::cout << "Chunk size: " << kChunkSize << " bytes" << std::endl;
     std::cout << std::string(60, '-') << std::endl;
 
-    // 1. Read the JSON file to feed.
-    std::string fileContent;
-    if(!ReadFile(jsonPath, fileContent))
+    // 1. Create a worker thread via ThreadManager.
+    auto& tm = A2ui::ThreadManager::getInstance();
+    if(!tm.createThread(kWorkerThreadId))
     {
+        std::cerr << "Error: failed to create worker thread" << std::endl;
+        return 1;
+    }
+    A2ui::IThread* workerThread = tm.getMessageThread(kWorkerThreadId);
+    if(!workerThread)
+    {
+        std::cerr << "Error: worker thread is null" << std::endl;
+        tm.destroyThread(kWorkerThreadId);
         return 1;
     }
 
-    // 2. Flatten a JSON array into a concatenation of individual event objects.
-    //    The streaming parser expects individual objects, not an array wrapper.
-    std::string streamContent = FlattenJsonArrayToStream(fileContent);
-    std::cout << "File size: " << fileContent.size() << " bytes"
-              << ", stream size: " << streamContent.size() << " bytes" << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
-
-    // 3. Create the verifying sink and the parser.
+    // 2. Create the verifying sink and the parser on the main thread.
+    //    The sink and parser are safe to share because the worker only calls
+    //    parser methods, and the main thread waits for completion before
+    //    reading the sink's results.
     VerifyingSink sink;
     A2ui::StreamingContentParser parser(&sink);
 
     if(!parser.start())
     {
         std::cerr << "Error: failed to start parser" << std::endl;
+        tm.destroyThread(kWorkerThreadId);
         return 1;
     }
 
-    // 4. Begin the streaming session (resets internal extractor state).
-    parser.processDataBeginning();
+    // 3. Use a promise to signal completion from the worker thread.
+    std::promise<void> donePromise;
+    std::future<void> doneFuture = donePromise.get_future();
 
-    // 5. Feed the content in fixed-size chunks to simulate the fragmented
-    //    arrival of network data.  The extractor uses brace-depth tracking to
-    //    detect complete top-level JSON objects, so it correctly handles chunks
-    //    that split an object mid-way.
-    std::size_t offset = 0;
-    int chunkIndex = 0;
-    while(offset < streamContent.size())
-    {
-        std::size_t remaining = streamContent.size() - offset;
-        std::size_t take = (remaining < kChunkSize) ? remaining : kChunkSize;
-        std::string chunk = streamContent.substr(offset, take);
-        parser.processDataAssembling(chunk);
-        offset += take;
-        ++chunkIndex;
-    }
+    // 4. Post the file-reading and chunk-feeding work to the worker thread.
+    workerThread->post([&]() {
+        std::cout << "[Worker] Loading JSON file: " << jsonPath << std::endl;
+
+        // Read the JSON file.
+        std::string fileContent;
+        if(!ReadFile(jsonPath, fileContent))
+        {
+            std::cerr << "[Worker] Error: cannot read file" << std::endl;
+            donePromise.set_value();
+            return;
+        }
+
+        // Flatten a JSON array into a concatenation of individual event objects.
+        std::string streamContent = FlattenJsonArrayToStream(fileContent);
+        std::cout << "[Worker] File size: " << fileContent.size() << " bytes"
+                  << ", stream size: " << streamContent.size() << " bytes" << std::endl;
+        std::cout << std::string(60, '-') << std::endl;
+
+        // Begin the streaming session.
+        parser.processDataBeginning();
+
+        // Feed the content in fixed-size chunks to simulate fragmented arrival.
+        std::size_t offset = 0;
+        int chunkIndex = 0;
+        while(offset < streamContent.size())
+        {
+            std::size_t remaining = streamContent.size() - offset;
+            std::size_t take = (remaining < kChunkSize) ? remaining : kChunkSize;
+            std::string chunk = streamContent.substr(offset, take);
+            parser.processDataAssembling(chunk);
+            offset += take;
+            ++chunkIndex;
+        }
+        std::cout << std::string(60, '-') << std::endl;
+        std::cout << "[Worker] Fed " << chunkIndex << " chunks ("
+                  << streamContent.size() << " bytes total)" << std::endl;
+
+        // End the streaming session.
+        parser.processDataEnding();
+        std::cout << std::string(60, '-') << std::endl;
+
+        // Signal the main thread that work is done.
+        donePromise.set_value();
+    });
+
+    // 5. Main thread waits for the worker to finish.
+    std::cout << "[Main] Waiting for worker thread to finish..." << std::endl;
+    doneFuture.get();
+    std::cout << "[Main] Worker thread completed." << std::endl;
     std::cout << std::string(60, '-') << std::endl;
-    std::cout << "Fed " << chunkIndex << " chunks (" << streamContent.size()
-              << " bytes total)" << std::endl;
 
-    // 6. End the streaming session.
-    parser.processDataEnding();
-    std::cout << std::string(60, '-') << std::endl;
+    // 6. Stop the parser.
+    parser.stop();
 
-    // 7. Print verification summary.
+    // 7. Destroy the worker thread.
+    tm.destroyThread(kWorkerThreadId);
+
+    // 8. Print verification summary on the main thread.
     int passed = 0;
     int failed = 0;
     for(const auto& c : sink.checks())
@@ -380,5 +435,5 @@ int main(int argc, char* argv[])
 
     return (failed == 0) ? 0 : 1;
 }
-// --- AI-generated section End --[20260817-212800-]-
-
+// --- AI-generated section End --[20260817-222700]-
+// --- AI-generated section End --[20260817-212800]-

@@ -55,6 +55,12 @@ SET(A2UI_STREAM_SOURCES
   src/stream/error-code.cpp
 )
 
+# Module: Thread manager (ported from AGenUI)
+SET(A2UI_MODULE_SOURCES
+  src/module/message-thread.cpp
+  src/module/thread-manager.cpp
+)
+
 # Renderer: DALi-side bindings.
 # One file per component renderer (renderer/components/*.cpp).
 FILE(GLOB A2UI_COMPONENT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/components/*.cpp)
@@ -62,6 +68,7 @@ FILE(GLOB A2UI_COMPONENT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/compon
 SET(A2UI_LIB_SOURCES
   ${A2UI_CORE_SOURCES}
   ${A2UI_STREAM_SOURCES}
+  ${A2UI_MODULE_SOURCES}
   src/renderer/a11y-bridge.cpp
   src/renderer/a2ui-host.cpp
   src/renderer/a2ui-renderer.cpp
@@ -128,7 +135,7 @@ INCLUDE(GNUInstallDirs)
 INSTALL(TARGETS a2ui-dali ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
 # Public headers keep their "core/..." / "renderer/..." / "stream/..." include prefixes.
-INSTALL(DIRECTORY src/core src/renderer src/stream src/third_party
+INSTALL(DIRECTORY src/core src/renderer src/stream src/module src/third_party
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/a2ui-dali
   FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
 
