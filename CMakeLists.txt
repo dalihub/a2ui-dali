@@ -42,12 +42,26 @@ SET(A2UI_CORE_SOURCES
   src/core/template-cache.cpp
 )
 
+# Stream: AGenUI-style streaming pipeline (ProtocolStreamExtractor, plugins,
+# StreamingContentParser with IStreamEventSink).  These replace the older
+# core/protocol-stream-extractor.cpp and core/streaming-content-parser.cpp
+# which had the same class names but incompatible APIs.
+SET(A2UI_STREAM_SOURCES
+  src/stream/protocol-stream-extractor.cpp
+  src/stream/streaming-content-parser.cpp
+  src/stream/markdown-stream-plugin.cpp
+  src/stream/text-stream-plugin.cpp
+  src/stream/composite-stream-plugin.cpp
+  src/stream/error-code.cpp
+)
+
 # Renderer: DALi-side bindings.
 # One file per component renderer (renderer/components/*.cpp).
 FILE(GLOB A2UI_COMPONENT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/components/*.cpp)
 
 SET(A2UI_LIB_SOURCES
   ${A2UI_CORE_SOURCES}
+  ${A2UI_STREAM_SOURCES}
   src/renderer/a11y-bridge.cpp
   src/renderer/a2ui-host.cpp
   src/renderer/a2ui-renderer.cpp
@@ -66,6 +80,7 @@ ADD_LIBRARY(a2ui-dali STATIC ${A2UI_LIB_SOURCES})
 
 TARGET_INCLUDE_DIRECTORIES(a2ui-dali PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party
   ${DALICORE_INCLUDE_DIRS}
   ${DALIADAPTOR_INCLUDE_DIRS}
   ${DALI_UI_FOUNDATION_INCLUDE_DIRS}
@@ -89,6 +104,13 @@ TARGET_LINK_LIBRARIES(a2ui-dali PUBLIC
   pthread
 )
 
+TARGET_COMPILE_OPTIONS(a2ui-dali PRIVATE
+  ${DALICORE_CFLAGS_OTHER}
+  ${DALIADAPTOR_CFLAGS_OTHER}
+  ${DALI_UI_FOUNDATION_CFLAGS_OTHER}
+  ${DALI_UI_COMPONENTS_CFLAGS_OTHER}
+)
+
 # Desktop (Ubuntu) build links against DALi installed under $DESKTOP_PREFIX.
 # Under gbs/RPM the deps are resolved via pkg-config from the system prefix,
 # and DESKTOP_PREFIX is unset, so only add this link path when it exists.
@@ -105,10 +127,10 @@ INCLUDE(GNUInstallDirs)
 
 INSTALL(TARGETS a2ui-dali ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
-# Public headers keep their "core/..." / "renderer/..." include prefixes.
-INSTALL(DIRECTORY src/core src/renderer
+# Public headers keep their "core/..." / "renderer/..." / "stream/..." include prefixes.
+INSTALL(DIRECTORY src/core src/renderer src/stream src/third_party
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/a2ui-dali
-  FILES_MATCHING PATTERN "*.h")
+  FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
 
 CONFIGURE_FILE(a2ui-dali.pc.in ${CMAKE_CURRENT_BINARY_DIR}/a2ui-dali.pc @ONLY)
 INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/a2ui-dali.pc
