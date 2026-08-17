@@ -215,6 +215,17 @@ SET_TARGET_PROPERTIES(a2ui-custom-component PROPERTIES
 )
 
 # ============================================================
+# Example: examples/streaming-parser — StreamingContentParser + IStreamEventSink
+# No DALi display needed; feeds a JSON file in chunks and prints parsed events.
+# ============================================================
+ADD_EXECUTABLE(a2ui-streaming-parser examples/streaming-parser/main.cpp)
+TARGET_LINK_LIBRARIES(a2ui-streaming-parser a2ui-dali)
+SET_TARGET_PROPERTIES(a2ui-streaming-parser PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+)
+
+
+# ============================================================
 # Install: example binaries + runtime data (Tizen/gbs packaging)
 # ============================================================
 # The renderer resolves images via a relative "res/" path
@@ -223,8 +234,9 @@ SET_TARGET_PROPERTIES(a2ui-custom-component PROPERTIES
 #   cd ${CMAKE_INSTALL_DATADIR}/a2ui-dali && a2ui-gallery-demo screens
 OPTION(A2UI_INSTALL_EXAMPLES "Install example binaries and runtime resources" ON)
 IF(A2UI_INSTALL_EXAMPLES)
-  INSTALL(TARGETS a2ui-basic-renderer a2ui-gallery-demo a2ui-custom-component
+  INSTALL(TARGETS a2ui-basic-renderer a2ui-gallery-demo a2ui-custom-component a2ui-streaming-parser
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
 
   INSTALL(DIRECTORY res/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/a2ui-dali/res)
