@@ -21,6 +21,7 @@
 #include "../core/expression-parser.h"
 #include "../core/action-dispatcher.h"
 #include "../core/diff-engine.h"
+#include "renderer/util/magic-reveal-manager.h"
 #include "view-pool.h"
 #include "component-registry.h"
 #include <dali-ui-foundation/dali-ui-foundation.h>
@@ -238,6 +239,11 @@ private:
   // native Button; we make Button/Card layouts tappable by attaching a
   // detector and must keep the handles alive for as long as the view tree.
   std::vector<Dali::TapGestureDetector> mTapDetectors;
+
+  // Manages MagicRevealEffect for every ImageView created by RenderImage.
+  // Each ImageView is auto-registered; the reveal plays on first image load.
+  // Held via unique_ptr so the header doesn't need the full definition.
+  std::unique_ptr<MagicRevealManager> mRevealManager;
 
   // Pointer to current components model (valid only during Render call)
   const SurfaceComponentsModel* mCurrentComponents = nullptr;

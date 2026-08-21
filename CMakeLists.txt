@@ -56,6 +56,9 @@ SET(A2UI_LIB_SOURCES
   src/renderer/a2ui-theme.cpp
   src/renderer/a2ui-metrics.cpp
   src/renderer/view-pool.cpp
+  src/renderer/util/shimmer-effect.cpp
+  src/renderer/util/magic-reveal-effect.cpp
+  src/renderer/util/magic-reveal-manager.cpp
   ${A2UI_COMPONENT_SOURCES}
 )
 

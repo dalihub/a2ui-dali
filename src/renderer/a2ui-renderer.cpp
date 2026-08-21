@@ -65,6 +65,7 @@ bool IsActivationKey(const std::string& keyName)
 
 A2uiRenderer::A2uiRenderer()
 {
+  mRevealManager = std::make_unique<MagicRevealManager>();
   RegisterStandardCatalog();
 }
 
@@ -180,9 +181,15 @@ View A2uiRenderer::RenderComponent(const std::string& id,
     // dali-ui 2.5.26 dropped the fluent-chaining setters (they now return void),
     // so configure the placeholder view via individual statements.
     View placeholder = View::New();
-    placeholder.SetBackgroundColor(UiColor(0xFF0000));
-    placeholder.SetRequestedWidth(MATCH_PARENT);
+    placeholder.SetBackgroundColor(UiColor(0x0000FF));
+    placeholder.SetRequestedWidth(300.0f);
     placeholder.SetRequestedHeight(20.0f);
+    // Pulse animation for "loading" feel
+    Animation pulse = Animation::New(1.0f);
+    pulse.AnimateTo(Property(placeholder, Actor::Property::OPACITY), 0.4f);
+    pulse.SetLooping(true);
+    pulse.SetLoopingMode(Animation::AUTO_REVERSE);
+    pulse.Play();
     return placeholder;
   }
 
