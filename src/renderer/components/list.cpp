@@ -108,7 +108,12 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
         [sizeItemMainAxis, horizontal, gap](View itemView, int itemIndex) {
           sizeItemMainAxis(itemView);
           ApplyItemGap(itemView, horizontal, gap, itemIndex == 0);
-        });
+        },
+        // onComplete: children are filled asynchronously (data arrives via
+        // updateDataModel after components), so the stagger must fire here —
+        // only when items actually exist in the container.
+        [this](View container) { StaggerRevealChildren(container); }
+      );
 
       return listContainer;
     }
@@ -160,6 +165,8 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
             itemIndex++;
           }
 
+          StaggerRevealChildren(listContainer);
+
           return listContainer;
         }
       }
@@ -175,6 +182,14 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
     ApplyItemGap(child, horizontal, gap, index == 0);
     listContainer.Add(child);
     index++;
+  }
+
+  // Simple childIds path: children were added synchronously above, so trigger
+  // the stagger directly. Guarded by index > 0 so an empty list doesn't
+  // create a pointless zero-duration animation.
+  if(index > 0)
+  {
+    StaggerRevealChildren(listContainer);
   }
 
   return listContainer;

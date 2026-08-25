@@ -140,7 +140,16 @@ private:
   void BuildTemplateChildren(const std::string& templateId, const std::string& arrayPath,
                              const SurfaceComponentsModel& components, DataContext& ctx,
                              Dali::Ui::View container,
-                             std::function<void(Dali::Ui::View item, int index)> prepareItem);
+                             std::function<void(Dali::Ui::View item, int index)> prepareItem,
+                             std::function<void(Dali::Ui::View container)> onComplete = nullptr);
+
+  /// Stagger-reveal children of @p container one by one with a fade-in animation.
+  /// Sets every child's opacity to 0, then animates each in sequence with a
+  /// per-item time offset so they appear progressively rather than all at once.
+  /// @param container   The FlexLayout whose direct children should be revealed.
+  /// @param staggerSec  Delay between each child's reveal start.
+  /// @param fadeSec     Duration of each child's fade-in.
+  void StaggerRevealChildren(Dali::Ui::View container, float staggerSec = 0.5f, float fadeSec = 0.5f);
 
   // === Remote / keyboard focus ===
   /// Make @p view reachable by the TV remote: mark it keyboard-focusable so the
@@ -245,6 +254,13 @@ private:
   // Held via unique_ptr so the header doesn't need the full definition.
   std::unique_ptr<MagicRevealManager> mRevealManager;
 
+  // Keeps stagger-reveal animations alive for the duration of playback.
+  // A vector (not a single Animation) so multiple Lists on the same surface
+  // can each run their own stagger without overwriting one another. Without
+  // holding a reference, Dali would garbage-collect the Animation before it
+  // finishes, and children would stay at opacity 0. Completed animations are
+  // pruned at the start of each StaggerRevealChildren call.
+  std::vector<Dali::Animation> mStaggerAnimations;
   // Pointer to current components model (valid only during Render call)
   const SurfaceComponentsModel* mCurrentComponents = nullptr;
   DataContext*                   mCurrentCtx = nullptr;

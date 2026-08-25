@@ -21,6 +21,10 @@
 #include <dali/integration-api/debug.h>
 #include <dali/public-api/events/key-event.h>
 #include <dali/public-api/events/touch-event.h>
+#include <dali/public-api/animation/animation.h>
+#include <dali/public-api/animation/time-period.h>
+#include <dali/public-api/animation/alpha-function.h>
+
 #include <dali-ui-foundation/public-api/views/image/image-view.h>
 #include <dali-ui-foundation/public-api/layouts/flex-layout-params.h>
 #include <dali-ui-foundation/public-api/views/scroll/scroll-view.h>
@@ -447,7 +451,8 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
                                          const std::string& arrayPath,
                                          const SurfaceComponentsModel& components,
                                          DataContext& ctx, View container,
-                                         std::function<void(View, int)> prepareItem)
+                                         std::function<void(View, int)> prepareItem,
+                                         std::function<void(View)> onComplete)
 {
   // Captured by value / by pointer: the callback outlives this call. The components model
   // and the DataModel both live in the SurfaceModel, and replacing either one goes through
@@ -463,7 +468,7 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
   auto rendered = std::make_shared<int>(-1);
 
   auto build = [self, templateId, arrayPath, comps, scope, container, prepareItem,
-                own, rendered]() mutable {
+                own, rendered, onComplete]() mutable {
     DataModel&      model = scope.GetDataModel();
     const TreeNode* array = model.ResolvePath(arrayPath);
     int             count = (array && array->GetType() == TreeNode::ARRAY)
@@ -499,6 +504,9 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
     }
     self->mWatchScope = saved;
     *rendered         = count;
+
+    // Fire onComplete after children have been built and added to the container.
+    if(onComplete) onComplete(container);
   };
 
   build(); // first paint — usually empty, the array arrives in a later updateDataModel
@@ -609,4 +617,49 @@ UiColor A2uiRenderer::ParseHexColor(const char* hex)
   return UiColor(val);
 }
 
+// ========================================================================
+// Stagger reveal — fade-in children one by one instead of all at once
+// ========================================================================
+void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float fadeSec)
+{
+  if(!container) return;
+
+  // Prune finished animations so the vector doesn't grow unboundedly across
+  // rebuilds. A STOPPED animation has either completed or never been played.
+  mStaggerAnimations.erase(
+    std::remove_if(mStaggerAnimations.begin(), mStaggerAnimations.end(),
+      [](const Animation& a) { return !a || a.GetState() == Animation::STOPPED; }),
+    mStaggerAnimations.end());
+
+  const uint32_t childCount = container.GetChildViewCount();
+  if(childCount == 0) return;
+
+  // One Animation holds all per-child AnimateTo with staggered TimePeriods so they
+  // overlap within a single timeline (cleaner than N separate Animations whose
+  // lifetimes we'd have to track individually).
+  float totalDuration = staggerSec * static_cast<float>(childCount - 1) + fadeSec;
+  if(totalDuration <= 0.0f) return;
+
+  Animation anim = Animation::New(totalDuration);
+  anim.SetEndAction(Animation::BAKE);       // bake final opacity=1.0 so it sticks after play
+  anim.SetDisconnectAction(Animation::BAKE);
+
+  for(uint32_t i = 0; i < childCount; ++i)
+  {
+    View child = container.GetChildViewAt(i);
+    if(!child) continue;
+
+    // Start invisible — the fade-in brings it from 0 → 1.
+    child.SetProperty(Actor::Property::OPACITY, 0.0f);
+
+    // Each child begins its fade at i*staggerSec and lasts fadeSec.
+    float delay = staggerSec * static_cast<float>(i);
+    anim.AnimateTo(Property(child, Actor::Property::OPACITY), 1.0f,
+                   AlphaFunction::EASE_OUT,
+                   TimePeriod(delay, fadeSec));
+  }
+
+  anim.Play();
+  mStaggerAnimations.push_back(anim);  // keep alive for the duration of playback
+}
 } // namespace A2ui
