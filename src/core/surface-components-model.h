@@ -67,10 +67,22 @@ public:
    */
   const std::vector<std::string>& GetLastModifiedIds() const { return mLastModifiedIds; }
 
+  /// Parent reverse index: find the parent of a child component.
+  /// @return parent component ID, or empty string if not found.
+  std::string GetParentId(const std::string& childId) const;
+
+  /// Get the index of a child within its parent's childIds list.
+  /// @return 0-based index, or -1 if the child is not a list child (or not found).
+  int GetChildIndexInParent(const std::string& childId) const;
+
 private:
   std::unordered_map<std::string, ComponentModel> mComponents;
   std::vector<std::string> mLastModifiedIds;
+
+  // childId → parentId reverse index, maintained during AddComponents.
+  std::unordered_map<std::string, std::string> mParentMap;
 };
+
 
 } // namespace A2ui
 

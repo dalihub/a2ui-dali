@@ -55,6 +55,18 @@ public:
    */
   Dali::Ui::View Render(SurfaceModel& surface);
 
+  /// Incremental render: update only changed components in the existing view tree.
+  /// Falls back to full Render() if no previous render exists or root itself changed.
+  /// Returns the current root view (same object already on stage — caller need not re-mount).
+  Dali::Ui::View RenderIncremental(SurfaceModel& surface);
+
+  /// Whether a previous render exists (root view registered in DiffEngine).
+  bool IsRendered() const { return mDiffEngine.HasView("root"); }
+
+  /// Reset render state so next call goes through full Render().
+  void InvalidateRenderState();
+
+
   /// How many tap targets the renderer is holding alive (diagnostics — a list that rebuilds
   /// without releasing its old detectors shows up here as a count that keeps climbing).
   size_t GetTapDetectorCount() const { return mTapDetectors.size(); }
@@ -264,7 +276,45 @@ private:
   // Pointer to current components model (valid only during Render call)
   const SurfaceComponentsModel* mCurrentComponents = nullptr;
   DataContext*                   mCurrentCtx = nullptr;
+
+  // === Incremental rendering internals ===
+
+  /// Batch-process a set of changed component IDs, rebuilding only the top-level
+  /// changes (descendants of a changed ancestor are covered by the ancestor's rebuild).
+  void ApplyIncrementalUpdates(SurfaceModel& surface,
+                               const std::vector<std::string>& changedIds,
+                               DataContext& ctx);
+
+  /// Rebuild one component and splice it into the parent container in place.
+  /// @param isNew  true → component is new (Add to parent); false → replace existing view.
+  void UpdateOneComponent(SurfaceModel& surface, const std::string& componentId,
+                          DataContext& ctx, bool isNew);
+
+  /// Copy flex layout params (grow/shrink/basis/alignSelf), requested width/height,
+  /// and margin from oldView to newView so the replacement keeps its slot.
+  void CopyLayoutParams(Dali::Ui::View oldView, Dali::Ui::View newView);
+
+  /// Remove all watchers registered by a given component from the DataModel.
+  void RetireComponentWatchers(DataModel& model, const std::string& componentId);
+
+  /// Filter changedIds to only those whose ancestors are NOT also in the set.
+  /// A changed ancestor implies the descendant is rebuilt as part of the ancestor's
+  /// recursive RenderComponent — no need to handle it separately.
+  std::vector<std::string> FilterTopLevelChanged(
+    const std::vector<std::string>& changedIds,
+    const SurfaceComponentsModel& components) const;
+
+  /// The component ID currently being rendered (set in RenderComponent, used by
+  /// RecordWatch to associate watchers with their owning component for retirement).
+  mutable std::string mCurrentRenderingId;
+
+  /// componentId → watcher IDs registered during that component's render.
+  /// Used by RetireComponentWatchers during incremental replacement.
+  /// Mutable because RecordWatch is const (called from const WatchBinding etc).
+  mutable std::unordered_map<std::string, std::vector<uint32_t>> mComponentWatchers;
+
 };
+
 
 } // namespace A2ui
 

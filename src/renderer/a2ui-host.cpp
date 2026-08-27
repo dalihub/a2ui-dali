@@ -172,8 +172,17 @@ void A2uiHost::RenderSurface(const std::string& surfaceId, SurfaceModel& surface
     if(mOnAction) mOnAction(sid, json);
   });
 
-  Dali::Ui::View view = mRenderer.Render(surface);
-  if(view && mOnRender) mOnRender(surfaceId, view);
+  // Use incremental rendering when a previous render exists; falls back to
+  // full Render() inside the renderer if root changed or no prior render.
+  Dali::Ui::View view = mRenderer.RenderIncremental(surface);
+  if(view && mOnRender)
+  {
+    // RenderIncremental returns the same root view object for incremental
+    // updates, so the callback fires with the current view — the caller's
+    // mount logic handles "already mounted" gracefully.
+    mOnRender(surfaceId, view);
+  }
 }
+
 
 } // namespace A2ui

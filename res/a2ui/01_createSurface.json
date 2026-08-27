@@ -1,0 +1,12 @@
+{
+    "version": "v0.9",
+    "createSurface": {
+        "surfaceId": "movie-cd4ec28a-3086-4e6c-ab19-bead2e3e1248",
+        "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json",
+        "theme": {
+            "primaryColor": "#00BFFF",
+            "agentDisplayName": "Test Agent"
+        },
+        "sendDataModel": true
+    }
+}

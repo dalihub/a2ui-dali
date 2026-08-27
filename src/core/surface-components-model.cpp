@@ -90,10 +90,21 @@ void SurfaceComponentsModel::AddComponents(const TreeNode& componentsArray)
     // Track modified IDs
     mLastModifiedIds.push_back(comp.id);
 
+    // Maintain parent reverse index: each child's ID → this component's ID.
+    for(const auto& cid : comp.childIds)
+    {
+      mParentMap[cid] = comp.id;
+    }
+    if(!comp.childId.empty())
+    {
+      mParentMap[comp.childId] = comp.id;
+    }
+
     // Upsert into map
     mComponents[comp.id] = std::move(comp);
   }
 }
+
 
 const ComponentModel* SurfaceComponentsModel::GetComponent(const std::string& id) const
 {
@@ -113,6 +124,37 @@ const ComponentModel* SurfaceComponentsModel::GetRoot() const
 void SurfaceComponentsModel::Clear()
 {
   mComponents.clear();
+  mParentMap.clear();
+}
+
+std::string SurfaceComponentsModel::GetParentId(const std::string& childId) const
+{
+  auto it = mParentMap.find(childId);
+  if(it != mParentMap.end())
+  {
+    return it->second;
+  }
+  return "";
+}
+
+int SurfaceComponentsModel::GetChildIndexInParent(const std::string& childId) const
+{
+  std::string parentId = GetParentId(childId);
+  if(parentId.empty()) return -1;
+
+  const ComponentModel* parent = GetComponent(parentId);
+  if(!parent) return -1;
+
+  for(int i = 0; i < static_cast<int>(parent->childIds.size()); ++i)
+  {
+    if(parent->childIds[i] == childId) return i;
+  }
+
+  // Single child (Card/Button childId)
+  if(parent->childId == childId) return 0;
+
+  return -1;
 }
 
 } // namespace A2ui
+

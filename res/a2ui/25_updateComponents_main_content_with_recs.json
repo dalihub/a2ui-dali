@@ -1,0 +1,22 @@
+{
+    "version": "v0.9",
+    "updateComponents": {
+        "surfaceId": "movie-cd4ec28a-3086-4e6c-ab19-bead2e3e1248",
+        "components": [
+            {
+                "id": "main_content",
+                "component": "Column",
+                "align": "start",
+                "justify": "start",
+                "children": [
+                    "movie_detail",
+                    "recommendations_section"
+                ],
+                "borderlineWidth": 2,
+                "borderlineColor": "0xc0c0c0",
+                "padding": 8,
+                "cornerRadius": 12
+            }
+        ]
+    }
+}

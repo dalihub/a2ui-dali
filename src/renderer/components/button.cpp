@@ -117,58 +117,67 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
   float btnWidth = kBtnMinWidth;
   if(!comp.childId.empty())
   {
-    View childView = RenderComponent(comp.childId, components, ctx);
-    Label labelChild = Label::DownCast(childView);
-    if(labelChild)
+    // Only render the child if its component definition has already arrived.
+    // If the child is not yet defined, render an empty button (no shimmer placeholder)
+    // — the real child will be spliced in by a subsequent incremental update.
+    const ComponentModel* childComp = components.GetComponent(comp.childId);
+    if(childComp)
     {
-      labelChild.SetTextColor(fgColor);
-      labelChild.SetFontWeight(Text::FontWeight::SEMI_BOLD);  // web button labels read semibold (5-agent consensus)
-      labelChild.SetFontSize(Metrics::FontButton());
-      labelChild.SetHorizontalTextAlignment(Text::Alignment::CENTER);
-      // Grow the label box to fit the full glyph run so text like "Submit
-      // Reservation" isn't ellipsized. Button width tracks the label so the
-      // padding is uniform on both sides regardless of text length.
-      labelChild.SetMultiLine(false);
-      labelChild.SetRequestedHeight(Metrics::Dp(20));
-      btnWidth = SizeButtonToLabel(button, labelChild);
+      View childView = RenderComponent(comp.childId, components, ctx);
+      Label labelChild = Label::DownCast(childView);
+      if(labelChild)
+      {
+        labelChild.SetTextColor(fgColor);
+        labelChild.SetFontWeight(Text::FontWeight::SEMI_BOLD);  // web button labels read semibold (5-agent consensus)
+        labelChild.SetFontSize(Metrics::FontButton());
+        labelChild.SetHorizontalTextAlignment(Text::Alignment::CENTER);
+        // Grow the label box to fit the full glyph run so text like "Submit
+        // Reservation" isn't ellipsized. Button width tracks the label so the
+        // padding is uniform on both sides regardless of text length.
+        labelChild.SetMultiLine(false);
+        labelChild.SetRequestedHeight(Metrics::Dp(20));
+        btnWidth = SizeButtonToLabel(button, labelChild);
 
-      // The width just measured is the width of the label AS IT IS RIGHT NOW, and a bound
-      // label is empty at this point — its value arrives in a later updateDataModel. Re-measure
-      // when it does, the same way text.cpp re-fits a streamed label's height.
-      //
-      // The watch is registered AFTER the child render above, so the label's own watch sits
-      // ahead of this one in the data model's observer list and has already written the new
-      // text by the time we read it back. WatchBinding is a no-op for a literal label.
-      const ComponentModel* childComp = components.GetComponent(comp.childId);
-      if(childComp && childComp->rawNode)
-      {
-        WatchBinding(childComp->rawNode->Find("text"), ctx,
-                     [button, labelChild](const std::string&) mutable {
-                       SizeButtonToLabel(button, labelChild);
-                     });
+        // The width just measured is the width of the label AS IT IS RIGHT NOW, and a bound
+        // label is empty at this point — its value arrives in a later updateDataModel. Re-measure
+        // when it does, the same way text.cpp re-fits a streamed label's height.
+        //
+        // The watch is registered AFTER the child render above, so the label's own watch sits
+        // ahead of this one in the data model's observer list and has already written the new
+        // text by the time we read it back. WatchBinding is a no-op for a literal label.
+        if(childComp && childComp->rawNode)
+        {
+          WatchBinding(childComp->rawNode->Find("text"), ctx,
+                       [button, labelChild](const std::string&) mutable {
+                         SizeButtonToLabel(button, labelChild);
+                       });
+        }
       }
-    }
-    else
-    {
-      // Icon-only button (e.g. a music-player prev/play/next transport control): the web
-      // draws these as a COMPACT borderless circular tap target, not a 140dp outlined pill.
-      btnWidth = kBtnHeight;
-      button.SetBackgroundColor(UiColor(0.0f, 0.0f, 0.0f, 0.0f));
-      button.SetBorderlineWidth(0.0f);
-      // The icon is an ACTION control, not an inline decorative glyph — override the icon's
-      // muted default to the button's dark foreground and enlarge it (the web transport
-      // glyphs are ~24px dark, not a faint 18px grey mark). Without this the prev/play/next
-      // controls render as barely-visible specks.
-      ImageView iconChild = ImageView::DownCast(childView);
-      if(iconChild)
+      else
       {
-        iconChild.SetImageColor(fgColor);
-        iconChild.SetRequestedWidth(Metrics::Dp(24));
-        iconChild.SetRequestedHeight(Metrics::Dp(24));
+        // Icon-only button (e.g. a music-player prev/play/next transport control): the web
+        // draws these as a COMPACT borderless circular tap target, not a 140dp outlined pill.
+        ImageView iconChild = ImageView::DownCast(childView);
+        if(iconChild)
+        {
+          btnWidth = kBtnHeight;
+          button.SetBackgroundColor(UiColor(0.0f, 0.0f, 0.0f, 0.0f));
+          button.SetBorderlineWidth(0.0f);
+          // The icon is an ACTION control, not an inline decorative glyph — override the icon's
+          // muted default to the button's dark foreground and enlarge it (the web transport
+          // glyphs are ~24px dark, not a faint 18px grey mark). Without this the prev/play/next
+          // controls render as barely-visible specks.
+          iconChild.SetImageColor(fgColor);
+          iconChild.SetRequestedWidth(Metrics::Dp(24));
+          iconChild.SetRequestedHeight(Metrics::Dp(24));
+        }
       }
+
+      button.Add(childView);
     }
-    button.Add(childView);
+    // else: child not yet defined → render empty button with default style
   }
+
   button.SetRequestedWidth(btnWidth);
 
   // Action handling

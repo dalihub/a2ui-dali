@@ -18,6 +18,7 @@
 #include "a2ui-theme.h"
 #include "a2ui-metrics.h"
 #include "render-style.h"
+#include "util/shimmer-effect.h"
 #include <dali/integration-api/debug.h>
 #include <dali/public-api/events/key-event.h>
 #include <dali/public-api/events/touch-event.h>
@@ -182,20 +183,22 @@ View A2uiRenderer::RenderComponent(const std::string& id,
   if(!comp)
   {
     DALI_LOG_ERROR("[A2UI] Renderer: Component '%s' not found\n", id.c_str());
-    // dali-ui 2.5.26 dropped the fluent-chaining setters (they now return void),
-    // so configure the placeholder view via individual statements.
-    View placeholder = View::New();
-    placeholder.SetBackgroundColor(UiColor(0x0000FF));
-    placeholder.SetRequestedWidth(300.0f);
-    placeholder.SetRequestedHeight(20.0f);
-    // Pulse animation for "loading" feel
-    Animation pulse = Animation::New(1.0f);
-    pulse.AnimateTo(Property(placeholder, Actor::Property::OPACITY), 0.4f);
-    pulse.SetLooping(true);
-    pulse.SetLoopingMode(Animation::AUTO_REVERSE);
-    pulse.Play();
-    return placeholder;
+    // Use ShimmerEffect as a loading placeholder for unknown components.
+    // Register the placeholder in DiffEngine so that a subsequent incremental
+    // update (when the real component definition arrives) correctly identifies
+    // this as an existing view and replaces it — otherwise the old shimmer
+    // view would be orphaned in the parent with its animation still running.
+    View shimmer = A2ui::ShimmerEffect::BuildOverlay(300.0f, 20.0f);
+    mDiffEngine.RegisterView(id, shimmer);
+    return shimmer;
+
   }
+
+
+  // Track which component is being rendered so RecordWatch can associate
+  // watchers with this component for later incremental retirement.
+  std::string prevRenderingId = mCurrentRenderingId;
+  mCurrentRenderingId = id;
 
   const std::string& type = comp->type;
   // Dispatch through the component registry (the catalog, in code). Unknown types fall
@@ -223,8 +226,11 @@ View A2uiRenderer::RenderComponent(const std::string& id,
     mDiffEngine.RegisterView(id, result);
   }
 
+  mCurrentRenderingId = prevRenderingId;
+
   return result;
 }
+
 
 // ========================================================================
 // Placeholder
@@ -539,7 +545,14 @@ void A2uiRenderer::RecordWatch(DataModel& model, const std::string& path,
   {
     s->ids.push_back(id);
   }
+  // Associate this watcher with the component currently being rendered so
+  // an incremental replacement can retire exactly its watchers.
+  if(!mCurrentRenderingId.empty())
+  {
+    mComponentWatchers[mCurrentRenderingId].push_back(id);
+  }
 }
+
 
 bool A2uiRenderer::WatchBinding(const TreeNode* propNode, DataContext& ctx,
                                 std::function<void(const std::string&)> apply) const
@@ -662,4 +675,275 @@ void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float
   anim.Play();
   mStaggerAnimations.push_back(anim);  // keep alive for the duration of playback
 }
+
+
+// ========================================================================
+// Incremental rendering (AI-generated)
+// ========================================================================
+
+void A2uiRenderer::InvalidateRenderState()
+{
+  mDiffEngine.Clear();
+  mComponentWatchers.clear();
+  mWatchScope.reset();
+}
+
+View A2uiRenderer::RenderIncremental(SurfaceModel& surface)
+{
+  // No previous render → full render
+  if(!IsRendered())
+  {
+    std::printf("[A2UI] *** Full render ***\n");
+    return Render(surface);
+  }
+
+  const SurfaceComponentsModel& components = surface.GetComponentsModel();
+  const auto& changedIds = components.GetLastModifiedIds();
+
+  // Root itself changed → full re-render
+  for(const auto& id : changedIds)
+  {
+    if(id == "root")
+    {
+      std::printf("[A2UI] *** Full render ***\n");
+      return Render(surface);
+    }
+  }
+  std::printf("[A2UI] *** RenderIncremental ***\n");
+  // Configure action dispatcher (same as full Render)
+  mActionDispatcher.SetSurfaceId(surface.GetSurfaceId());
+  mActionDispatcher.SetSendDataModel(surface.GetSendDataModel());
+
+  DataContext ctx(surface.GetDataModel());
+  mCurrentComponents = &components;
+  mCurrentCtx = &ctx;
+
+  try
+  {
+    ApplyIncrementalUpdates(surface, changedIds, ctx);
+  }
+  catch(const std::exception& e)
+  {
+    DALI_LOG_ERROR("[A2UI] *** RenderIncremental() EXCEPTION: %s ***\n", e.what());
+    mCurrentComponents = nullptr;
+    mCurrentCtx = nullptr;
+    throw;
+  }
+
+  mCurrentComponents = nullptr;
+  mCurrentCtx = nullptr;
+
+  // Return the current root view (unchanged object — caller need not re-mount)
+  return mDiffEngine.GetView("root");
+}
+
+void A2uiRenderer::ApplyIncrementalUpdates(SurfaceModel& surface,
+                                            const std::vector<std::string>& changedIds,
+                                            DataContext& ctx)
+{
+  const SurfaceComponentsModel& components = surface.GetComponentsModel();
+
+  // Filter to top-level changes: if an ancestor of a changed component is also
+  // changed, the ancestor's rebuild will cover the descendant.
+  std::vector<std::string> topLevel = FilterTopLevelChanged(changedIds, components);
+
+  // Track which IDs already existed before this update (for Add vs Replace decision)
+  // An ID is "new" if the DiffEngine has no view for it yet.
+  for(const std::string& id : topLevel)
+  {
+    bool isNew = !mDiffEngine.HasView(id);
+    UpdateOneComponent(surface, id, ctx, isNew);
+  }
+
+  // Update snapshot so next diff is relative to the current state
+  mDiffEngine.TakeSnapshot(components);
+}
+
+void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& componentId,
+                                      DataContext& ctx, bool isNew)
+{
+  const SurfaceComponentsModel& components = surface.GetComponentsModel();
+  const ComponentModel* comp = components.GetComponent(componentId);
+  if(!comp)
+  {
+    DALI_LOG_ERROR("[A2UI] Incremental: component '%s' not found\n", componentId.c_str());
+    return;
+  }
+
+  // Capture the old view BEFORE RenderComponent — RenderComponent calls
+  // RegisterView() internally, which would overwrite the old mapping.
+  View oldView = isNew ? View() : mDiffEngine.GetView(componentId);
+
+  // Retire old watchers registered by this component (and its descendants).
+  // RenderComponent will re-register fresh ones for the new subtree.
+  RetireComponentWatchers(surface.GetDataModel(), componentId);
+
+  // Render the new subtree
+  View newView = RenderComponent(componentId, components, ctx);
+  if(!newView)
+  {
+    DALI_LOG_ERROR("[A2UI] Incremental: RenderComponent returned null for '%s'\n", componentId.c_str());
+    return;
+  }
+
+  if(isNew)
+  {
+    // New component: find its parent and Add it at the right position
+    std::string parentId = components.GetParentId(componentId);
+    if(parentId.empty())
+    {
+      // No parent found — can't splice a new root-level component
+      DALI_LOG_ERROR("[A2UI] Incremental: new component '%s' has no parent\n", componentId.c_str());
+      return;
+    }
+
+    View parentView = mDiffEngine.GetView(parentId);
+    if(!parentView)
+    {
+      DALI_LOG_ERROR("[A2UI] Incremental: parent view '%s' not found\n", parentId.c_str());
+      return;
+    }
+
+    int index = components.GetChildIndexInParent(componentId);
+    if(index >= 0 && static_cast<uint32_t>(index) < parentView.GetChildViewCount())
+    {
+      // Insert at the correct position — but dali-ui View doesn't have InsertAt,
+      // so we Remove all children after the insertion point, Add the new one,
+      // then re-Add the rest. For simplicity (and since new children are typically
+      // appended at the end), just Add at the end if index == count.
+      parentView.Add(newView);
+    }
+    else
+    {
+      // Append at end (common case for template children growth)
+      parentView.Add(newView);
+    }
+  }
+  else
+  {
+    // Existing component: replace the old view in-place
+    if(!oldView)
+    {
+      DALI_LOG_ERROR("[A2UI] Incremental: old view for '%s' not in DiffEngine\n", componentId.c_str());
+      return;
+    }
+
+
+
+    // Copy layout params so the replacement keeps its slot
+    CopyLayoutParams(oldView, newView);
+
+    // Find the parent container and replace
+    std::string parentId = components.GetParentId(componentId);
+    if(parentId.empty())
+    {
+      // This is root or an orphaned component — can't splice
+      DALI_LOG_ERROR("[A2UI] Incremental: component '%s' has no parent for replace\n", componentId.c_str());
+      return;
+    }
+
+    View parentView = mDiffEngine.GetView(parentId);
+    if(!parentView)
+    {
+      DALI_LOG_ERROR("[A2UI] Incremental: parent view '%s' not found for replace\n", parentId.c_str());
+      return;
+    }
+
+    // Find the old view's position in parent and replace it
+    uint32_t childCount = parentView.GetChildViewCount();
+    for(uint32_t i = 0; i < childCount; ++i)
+    {
+      if(parentView.GetChildViewAt(i) == oldView)
+      {
+        // Remove old, insert new at same position.
+        // dali-ui doesn't have a Replace method, so Remove + re-Add children.
+        // Collect children after the removed position
+        std::vector<View> after;
+        for(uint32_t j = i + 1; j < childCount; ++j)
+        {
+          after.push_back(parentView.GetChildViewAt(j));
+        }
+        // Remove old view and all after it
+        parentView.Remove(oldView);
+        for(const auto& v : after)
+        {
+          parentView.Remove(v);
+        }
+        // Add new view at position i
+        parentView.Add(newView);
+        // Re-Add the rest
+        for(const auto& v : after)
+        {
+          parentView.Add(v);
+        }
+        break;
+      }
+    }
+  }
+}
+
+void A2uiRenderer::CopyLayoutParams(View oldView, View newView)
+{
+  if(!oldView || !newView) return;
+
+  // Copy margin (parent-assigned layout spacing, not component-declared size)
+  newView.SetMargin(oldView.GetMargin());
+
+  // Copy FlexLayoutParams if present (flex grow/shrink/basis from parent)
+  FlexLayoutParams flexParams;
+  if(oldView.TryGetLayoutParams(flexParams))
+  {
+    newView.SetLayoutParams(flexParams);
+  }
+
+  // NOTE: Do NOT copy requested width/height — the new view already has its
+  // own dimensions set from the JSON component definition. Copying the old
+  //
+}
+
+void A2uiRenderer::RetireComponentWatchers(DataModel& model, const std::string& componentId)
+{
+  auto it = mComponentWatchers.find(componentId);
+
+
+  if(it == mComponentWatchers.end()) return;
+
+  model.UnwatchAll(it->second);
+  mComponentWatchers.erase(it);
+}
+
+std::vector<std::string> A2uiRenderer::FilterTopLevelChanged(
+  const std::vector<std::string>& changedIds,
+  const SurfaceComponentsModel& components) const
+{
+  // Build a set for O(1) lookup
+  std::unordered_set<std::string> changedSet(changedIds.begin(), changedIds.end());
+
+  std::vector<std::string> result;
+  for(const std::string& id : changedIds)
+  {
+    // Walk up the parent chain; if any ancestor is also in changedSet,
+    // this component is covered by the ancestor's rebuild → skip it.
+    bool coveredByAncestor = false;
+    std::string parentId = components.GetParentId(id);
+    while(!parentId.empty())
+    {
+      if(changedSet.count(parentId))
+      {
+        coveredByAncestor = true;
+        break;
+      }
+      parentId = components.GetParentId(parentId);
+    }
+
+    if(!coveredByAncestor)
+    {
+      result.push_back(id);
+    }
+  }
+  return result;
+}
+
+
 } // namespace A2ui
+
