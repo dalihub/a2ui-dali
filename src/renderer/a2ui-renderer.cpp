@@ -18,7 +18,6 @@
 #include "a2ui-theme.h"
 #include "a2ui-metrics.h"
 #include "render-style.h"
-#include "util/shimmer-effect.h"
 #include <dali/integration-api/debug.h>
 #include <dali/public-api/events/key-event.h>
 #include <dali/public-api/events/touch-event.h>
@@ -183,15 +182,18 @@ View A2uiRenderer::RenderComponent(const std::string& id,
   if(!comp)
   {
     DALI_LOG_ERROR("[A2UI] Renderer: Component '%s' not found\n", id.c_str());
-    // Use ShimmerEffect as a loading placeholder for unknown components.
-    // Register the placeholder in DiffEngine so that a subsequent incremental
-    // update (when the real component definition arrives) correctly identifies
-    // this as an existing view and replaces it — otherwise the old shimmer
-    // view would be orphaned in the parent with its animation still running.
-    View shimmer = A2ui::ShimmerEffect::BuildOverlay(300.0f, 20.0f);
-    mDiffEngine.RegisterView(id, shimmer);
-    return shimmer;
-
+    View placeholder = View::New();
+    placeholder.SetBackgroundColor(UiColor(0xB8C1C4));
+    placeholder.SetRequestedWidth(300.0f);
+    placeholder.SetRequestedHeight(20.0f);
+    // Pulse animation for "loading" feel
+    Animation pulse = Animation::New(3.0f);
+    pulse.AnimateTo(Property(placeholder, Actor::Property::OPACITY), 0.2f);
+    pulse.SetLooping(true);
+    pulse.SetLoopingMode(Animation::AUTO_REVERSE);
+    pulse.Play();
+    mDiffEngine.RegisterView(id, placeholder);
+    return placeholder;
   }
 
 
