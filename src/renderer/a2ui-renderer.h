@@ -104,6 +104,14 @@ private:
   Dali::Ui::View RenderButton(const ComponentModel& comp,
                               const SurfaceComponentsModel& components,
                               DataContext& ctx);
+
+  /// Compute the correct AlignSelf for a Button based on its parent container's
+  /// alignment and centred-style detection. Mirrors the override logic in
+  /// flex-container.cpp so the button is correct even on incremental add
+  /// (where the parent's child loop never re-runs).
+  Dali::Ui::FlexAlign ComputeButtonAlignSelf(const ComponentModel& comp,
+                                             const SurfaceComponentsModel& components) const;
+
   Dali::Ui::View RenderImage(const ComponentModel& comp, DataContext& ctx);
   Dali::Ui::View RenderDivider(const ComponentModel& comp);
   Dali::Ui::View RenderPlaceholder(const ComponentModel& comp);
@@ -296,6 +304,13 @@ private:
 
   /// Remove all watchers registered by a given component from the DataModel.
   void RetireComponentWatchers(DataModel& model, const std::string& componentId);
+
+  /// Re-render a parent container after a child was added/replaced, so the
+  /// parent's child loop (flex params, pinning, alignment) runs with all
+  /// children present. Retires watchers for the parent and all its children,
+  /// then splices the new parent view into the grandparent.
+  void RerenderParent(SurfaceModel& surface, const std::string& parentId,
+                      DataContext& ctx);
 
   /// Filter changedIds to only those whose ancestors are NOT also in the set.
   /// A changed ancestor implies the descendant is rebuilt as part of the ancestor's

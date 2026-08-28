@@ -65,6 +65,63 @@ float SizeButtonToLabel(FlexLayout button, Label labelChild)
 }
 } // namespace
 
+FlexAlign A2uiRenderer::ComputeButtonAlignSelf(const ComponentModel& comp,
+                                               const SurfaceComponentsModel& components) const
+{
+  // Default: centre the button (safe fallback, matches the previous hardcoded value).
+  FlexAlign align = FlexAlign::CENTER;
+
+  // Walk up to the parent component.
+  std::string parentId = components.GetParentId(comp.id);
+  if(parentId.empty())
+    return align;  // no parent (root-level) — keep CENTER
+
+  const ComponentModel* parent = components.GetComponent(parentId);
+  if(!parent)
+    return align;
+
+  // Only a Column's cross-axis alignment affects horizontal placement of a button.
+  // A Row's cross axis is VERTICAL (align-items controls top/centre/bottom, not left/right),
+  // so a Button inside a Row keeps CENTER (its left/right position is the Row's main axis).
+  if(parent->type != "Column")
+    return align;
+
+  if(!parent->rawNode)
+    return align;
+
+  const char* alignStr = GetNodeString(*parent->rawNode, "align", "stretch");
+
+  // Explicit align on the parent Column wins directly.
+  if(strcmp(alignStr, "center") == 0)
+    return FlexAlign::CENTER;
+  if(strcmp(alignStr, "end") == 0)
+    return FlexAlign::FLEX_END;
+  if(strcmp(alignStr, "start") == 0)
+    return FlexAlign::FLEX_START;
+
+  // Default align ("stretch" or undeclared): check whether this is a centred-style
+  // card. If any sibling Column has align:center or any sibling Row has justify:center,
+  // this is a centred card (auth dialog "Sign in") → the button should centre too.
+  // Otherwise it's a left-aligned content column (movie "Watch Trailer") → FLEX_START.
+  // This mirrors the columnCentredStyle detection in flex-container.cpp lines 148-165.
+  for(const auto& siblingId : parent->childIds)
+  {
+    if(siblingId == comp.id) continue;  // skip self
+    const ComponentModel* sib = components.GetComponent(siblingId);
+    if(!sib || !sib->rawNode) continue;
+
+    bool sibRow = (sib->type == "Row");
+    bool centredSib = sibRow
+      ? (strcmp(GetNodeString(*sib->rawNode, "justify", ""), "center") == 0)
+      : (strcmp(GetNodeString(*sib->rawNode, "align", ""), "center") == 0);
+    if(centredSib)
+      return FlexAlign::CENTER;  // centred-style card → button stays centred
+  }
+
+  // Left-aligned content column with no centred siblings → button at the start (left).
+  return FlexAlign::FLEX_START;
+}
+
 View A2uiRenderer::RenderButton(const ComponentModel& comp,
                                 const SurfaceComponentsModel& components,
                                 DataContext& ctx)
@@ -92,10 +149,16 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
   button.SetMaximumHeight(kBtnHeight);  // pin the height so every button is uniform
   button.SetCornerRadius(kBtnHeight * 0.5f);  // OneUI CornerRadius 0.5 → pill
   button.SetPadding(Extents(kPadX, kPadX, kPadY, kPadY));
+
+  // Compute AlignSelf from the parent container instead of a hardcoded CENTER:
+  // flex-container.cpp's override only runs during a full parent render, so an
+  // incrementally-added button would otherwise stay centred in a left-aligned Column.
+  FlexAlign buttonAlignSelf = ComputeButtonAlignSelf(comp, components);
+
   // No self-margin: the container's gap handles spacing. (A self-margin was overwritten
   // on the 2nd+ row child by the gap logic, making buttons in a Row look uneven.)
   // Don't let the parent Column's align:stretch override our fixed size.
-  button.SetLayoutParams(FlexLayoutParams::New().SetAlignSelf(FlexAlign::CENTER));
+  button.SetLayoutParams(FlexLayoutParams::New().SetAlignSelf(buttonAlignSelf));
   button.SetFocusable(true);
 
   // White outlined pill: white fill, light outline, near-black label. borderless = text-only.
@@ -115,6 +178,7 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
   }
 
   float btnWidth = kBtnMinWidth;
+
   if(!comp.childId.empty())
   {
     // Only render the child if its component definition has already arrived.

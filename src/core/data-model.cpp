@@ -422,6 +422,26 @@ std::string DataModel::GetString(const std::string& path) const
       return FormatFloatToken(node->GetFloat());
     case TreeNode::BOOLEAN:
       return node->GetBoolean() ? "true" : "false";
+    // Join array elements with ", " so a string-bound Text component can display
+    // array values (e.g. genres: ["Drama", "Crime"] → "Drama, Crime").
+    case TreeNode::ARRAY:
+    {
+      std::string result;
+      for(auto it = node->CBegin(); it != node->CEnd(); ++it)
+      {
+        const TreeNode& elem = (*it).second;
+        if(!result.empty()) result += ", ";
+        switch(elem.GetType())
+        {
+          case TreeNode::STRING:  result += elem.GetString(); break;
+          case TreeNode::INTEGER:  result += std::to_string(elem.GetInteger()); break;
+          case TreeNode::FLOAT:    result += FormatFloatToken(elem.GetFloat()); break;
+          case TreeNode::BOOLEAN:  result += elem.GetBoolean() ? "true" : "false"; break;
+          default: break;
+        }
+      }
+      return result;
+    }
     default:
       return "";
   }

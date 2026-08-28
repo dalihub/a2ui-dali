@@ -818,6 +818,12 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
       // Append at end (common case for template children growth)
       parentView.Add(newView);
     }
+
+    // Re-render the parent container so its child loop (flex params, pinning,
+    // alignment) runs with all children present. Without this, a child added
+    // incrementally keeps the placeholder's empty flex params and can push its
+    // siblings off-screen.
+    RerenderParent(surface, parentId, ctx);
   }
   else
   {
@@ -878,6 +884,69 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
         }
         break;
       }
+    }
+
+    // Re-render the parent container so its child loop (flex params, pinning,
+    // alignment) runs with the updated child — e.g. when a placeholder is
+    // replaced by the real component.
+    RerenderParent(surface, parentId, ctx);
+  }
+}
+
+void A2uiRenderer::RerenderParent(SurfaceModel& surface, const std::string& parentId,
+                                  DataContext& ctx)
+{
+  const SurfaceComponentsModel& components = surface.GetComponentsModel();
+  const ComponentModel* parentComp = components.GetComponent(parentId);
+  if(!parentComp) return;
+
+  // The root container has no grandparent to splice into, and the host's render
+  // callback keys off the DiffEngine's root view object identity. Re-rendering
+  // root here would create a new root view in the DiffEngine (breaking identity)
+  // without actually placing it on stage. Skip — root-level layout is already
+  // correct because root is re-rendered as a whole on any root component change.
+  if(parentId == "root") return;
+
+  View parentOldView = mDiffEngine.GetView(parentId);
+  if(!parentOldView) return;
+
+  // Retire watchers for the parent AND all its descendants (the re-render
+  // rebuilds the whole subtree).
+  RetireComponentWatchers(surface.GetDataModel(), parentId);
+  for(const auto& cid : parentComp->childIds)
+  {
+    RetireComponentWatchers(surface.GetDataModel(), cid);
+  }
+  if(!parentComp->childId.empty())
+  {
+    RetireComponentWatchers(surface.GetDataModel(), parentComp->childId);
+  }
+
+  View parentNewView = RenderComponent(parentId, components, ctx);
+  if(!parentNewView) return;
+
+  CopyLayoutParams(parentOldView, parentNewView);
+
+  // Splice the new parent view into the grandparent, replacing the old one.
+  std::string grandParentId = components.GetParentId(parentId);
+  if(grandParentId.empty()) return;
+
+  View grandParentView = mDiffEngine.GetView(grandParentId);
+  if(!grandParentView) return;
+
+  uint32_t gc = grandParentView.GetChildViewCount();
+  for(uint32_t i = 0; i < gc; ++i)
+  {
+    if(grandParentView.GetChildViewAt(i) == parentOldView)
+    {
+      std::vector<View> after;
+      for(uint32_t j = i + 1; j < gc; ++j)
+        after.push_back(grandParentView.GetChildViewAt(j));
+      grandParentView.Remove(parentOldView);
+      for(const auto& v : after) grandParentView.Remove(v);
+      grandParentView.Add(parentNewView);
+      for(const auto& v : after) grandParentView.Add(v);
+      break;
     }
   }
 }
