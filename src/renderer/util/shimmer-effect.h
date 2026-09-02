@@ -12,6 +12,12 @@
  * #F8F8FA) sweeps gently from left to right, repeating every 0.6 seconds using
  * an easeInEaseOut interpolation curve. The edges of the light band transition
  * smoothly with no hard edges.
+ *
+ * The container uses WRAP_CONTENT + FlexGrow(1.0) so it fills the parent's
+ * remaining main-axis space without overflowing or pushing siblings off-screen.
+ * The gradient overlay uses a fixed large width (1920px) so the shimmer sweep
+ * covers any screen width. The container's CLIP_TO_BOUNDING_BOX clips the
+ * gradient to the actual visible area.
  */
 
 #include <dali-ui-foundation/public-api/views/view.h>
@@ -25,6 +31,10 @@ namespace A2ui {
  * BuildOverlay() returns a self-contained View with a looping shimmer
  * animation already playing. The caller adds the returned View to the
  * scene graph wherever a shimmer placeholder is needed.
+ *
+ * The returned View uses WRAP_CONTENT + FlexGrow(1.0) so it fills the
+ * parent's remaining main-axis space. The gradient overlay uses a fixed
+ * 1920px width so the sweep covers any screen size.
  */
 class ShimmerEffect {
  public:
@@ -40,16 +50,16 @@ class ShimmerEffect {
   /**
    * @brief Builds a self-contained shimmer View with a looping animation.
    *
-   * Creates a clipping container with the base gray background, adds a
-   * gradient overlay child, and starts a looping left-to-right sweep
-   * animation. The animation plays indefinitely.
+   * Creates a clipping container with WRAP_CONTENT + FlexGrow(1.0) and the
+   * base gray background. A gradient overlay (fixed 1920px width) is added
+   * as a child and animated left-to-right with a looping sweep animation.
+   * The container's CLIP_TO_BOUNDING_BOX clips the gradient to the actual
+   * visible area.
    *
-   * @param width  The width of the shimmer placeholder in pixels.
-   * @param height The height of the shimmer placeholder in pixels.
    * @return A View containing the shimmer animation, ready to be added to
    *         the scene graph.
    */
-  static Dali::Ui::View BuildOverlay(float width, float height);
+  static Dali::Ui::View BuildOverlay();
 };
 
 }  // namespace A2ui
