@@ -11,7 +11,9 @@ Automated release tracking **dali-ui v2.5.36.11230** (with `dali2-core` / `dali2
 
 ### Changed
 
-- Rebuild against dali-ui `v2.5.36.11230` — no renderer source changes required.
+- Adapt image dimension lookup to dali-ui `v2.5.36.11230`'s public API: use the
+  public image-loading header and `GetOriginalImageSize` in place of the removed
+  devel header and `GetClosestImageSize` call.
 
 ### Compatibility
 
