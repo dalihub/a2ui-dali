@@ -9,7 +9,7 @@
  * Effect description (ported from ShimmerTransition.java):
  * The image area displays a solid placeholder with a slightly dark gray color
  * (#E5E5EA). On top of this base color, a soft light band (highlight color
- * #F8F8FA) sweeps gently from left to right, repeating every 0.6 seconds using
+ * #F8F8FA) sweeps gently from left to right, repeating every 1.5 seconds using
  * an easeInEaseOut interpolation curve. The edges of the light band transition
  * smoothly with no hard edges.
  *
@@ -44,8 +44,8 @@ class ShimmerEffect {
   /// Highlight color: light (#F8F8FA)
   static constexpr uint32_t HIGHLIGHT_COLOR = 0xF8F8FA;
 
-  /// Shimmer loop duration in seconds (0.6s, matching Android ShimmerTransition)
-  static constexpr float SHIMMER_DURATION = 0.6f;
+  /// Shimmer loop duration in seconds
+  static constexpr float SHIMMER_DURATION = 1.5f;
 
   /**
    * @brief Builds a self-contained shimmer View with a looping animation.

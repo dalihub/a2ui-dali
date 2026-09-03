@@ -7,7 +7,7 @@
  * Ported from ShimmerTransition.java:
  *   - Base color: #E5E5EA (slightly dark gray)
  *   - Highlight color: #F8F8FA (light)
- *   - Light band sweeps left-to-right, 0.6s loop, easeInEaseOut
+ *   - Light band sweeps left-to-right, 1.5s loop, easeInEaseOut
  *   - Smooth gradient edges, no hard edges
  *
  * Implementation: Uses DALi's gradient API (LinearGradient) on a wide overlay
@@ -80,23 +80,21 @@ Ui::View ShimmerEffect::BuildOverlay() {
   grad.SetUnits(Ui::Gradient::Units::OBJECT_BOUNDING_BOX);
   grad.SetSpreadMethod(Ui::Gradient::SpreadMethod::PAD);
 
-  // Transparent shimmer: the gradient is fully transparent except for the
-  // highlight band, so only the sweeping light is visible over content.
-  //   0.00  → transparent       (View left edge)
-  //   0.15  → transparent       (front segment invisible)
-  //   0.25  → HIGHLIGHT_COLOR   (center peak, bright band)
-  //   0.35  → transparent       (back segment invisible)
-  //   1.00  → transparent       (View right edge)
-  // Bright band width = (0.35-0.15) × 1920 = 384px
+  // Symmetric shimmer band at the LEFT edge of the gradient:
+  //   0.00  → transparent       (band left edge fades in)
+  //   0.05  → HIGHLIGHT_COLOR   (band center, brightest)
+  //   0.10  → transparent       (band right edge fades out)
+  //   1.00  → transparent       (rest of gradient invisible)
+  // Band width = 0.10 × 1920 = 192px, centered at 0.05 × 1920 = 96px
+  // The band is symmetric (transparent→bright→transparent) and positioned at
+  // the left edge so the animation sweep starts from the container's left side.
   Vector<Ui::Gradient::StopNode> stopNodes;
   stopNodes.PushBack(
       Ui::Gradient::StopNode(0.00f,  Ui::UiColor(0.0f, 0.0f, 0.0f, 0.0f)));
   stopNodes.PushBack(
-      Ui::Gradient::StopNode(0.15f,  Ui::UiColor(0.0f, 0.0f, 0.0f, 0.0f)));
+      Ui::Gradient::StopNode(0.05f,  Ui::UiColor(ShimmerEffect::HIGHLIGHT_COLOR)));
   stopNodes.PushBack(
-      Ui::Gradient::StopNode(0.25f,  Ui::UiColor(ShimmerEffect::HIGHLIGHT_COLOR)));
-  stopNodes.PushBack(
-      Ui::Gradient::StopNode(0.35f,  Ui::UiColor(0.0f, 0.0f, 0.0f, 0.0f)));
+      Ui::Gradient::StopNode(0.10f,  Ui::UiColor(0.0f, 0.0f, 0.0f, 0.0f)));
   stopNodes.PushBack(
       Ui::Gradient::StopNode(1.00f,  Ui::UiColor(0.0f, 0.0f, 0.0f, 0.0f)));
 
@@ -121,7 +119,7 @@ Ui::View ShimmerEffect::BuildOverlay() {
                        AlphaFunction::EASE_IN_OUT);
   animation.SetLooping(true);
   animation.SetLoopingMode(Animation::RESTART);
-  animation.SetEndAction(Animation::BAKE);
+  animation.SetEndAction(Animation::BAKE_FINAL);
   animation.SetDisconnectAction(Animation::DISCARD);
   animation.Play();
 
