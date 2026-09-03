@@ -1,5 +1,5 @@
 #include "renderer/render-internal.h"
-#include <dali/devel-api/adaptor-framework/image-loading.h>
+#include <dali/public-api/adaptor-framework/image-loading.h>
 
 namespace A2ui
 {
@@ -74,7 +74,7 @@ View A2uiRenderer::RenderImage(const ComponentModel& comp, DataContext& ctx)
     float aspect = 0.66f;  // h/w fallback for an unknown/remote file (3:2 landscape)
     if(!resolvedPath.empty())
     {
-      Dali::ImageDimensions dim = Dali::GetClosestImageSize(resolvedPath);
+      Dali::ImageDimensions dim = Dali::GetOriginalImageSize(resolvedPath.c_str());
       if(dim.GetWidth() > 0 && dim.GetHeight() > 0)
         aspect = static_cast<float>(dim.GetHeight()) / static_cast<float>(dim.GetWidth());
     }
@@ -153,7 +153,7 @@ View A2uiRenderer::RenderImage(const ComponentModel& comp, DataContext& ctx)
       // centred cover-crop deterministically. (NO DesiredHeight — it forced an unstable/blurry
       // pre-cropped decode.) Band aspect == box aspect, so FILL shows it undistorted.
       float srcAspect = 1.0f;  // h/w
-      Dali::ImageDimensions dim = Dali::GetClosestImageSize(bannerPath);
+      Dali::ImageDimensions dim = Dali::GetOriginalImageSize(bannerPath.c_str());
       if(dim.GetWidth() > 0 && dim.GetHeight() > 0)
         srcAspect = static_cast<float>(dim.GetHeight()) / static_cast<float>(dim.GetWidth());
       float boxAspect = (desiredW > 0.0f) ? (vh / desiredW) : srcAspect;
