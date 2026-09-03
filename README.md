@@ -17,11 +17,11 @@ DALi itself.
 >
 > | Module | Version |
 > |--------|---------|
-> | `dali2-core`, `dali2-adaptor` | **`dali_2.5.34`** |
-> | `dali2-ui-foundation`, `dali2-ui-components` | **`dali-ui` `v2.5.33.11051`** — category-directory headers (`public-api/{views,types,configuration}/…`) and the JSON builder under `integration-api/builder` (`Dali::Ui::Integration::TreeNode`) |
+> | `dali2-core`, `dali2-adaptor` | **`dali_2.5.37`** |
+> | `dali2-ui-foundation`, `dali2-ui-components` | **`dali-ui` `v2.5.36.11230`** — category-directory headers (`public-api/{views,types,configuration}/…`) and the JSON builder under `integration-api/builder` (`Dali::Ui::Integration::TreeNode`) |
 >
-> `dali-ui` trails `dali-core`/`dali-adaptor` by one minor version, so pair `dali-ui` 2.5.33
-> with core/adaptor 2.5.34. Building against an older `dali-ui` that still keeps the builder
+> `dali-ui` trails `dali-core`/`dali-adaptor` by one minor version, so pair `dali-ui` 2.5.36
+> with core/adaptor 2.5.37. Building against an older `dali-ui` that still keeps the builder
 > in `devel-api` or the view headers directly under `public-api/` will not compile — track a
 > `dali-ui` revision from the same period.
 

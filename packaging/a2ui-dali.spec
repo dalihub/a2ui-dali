@@ -1,6 +1,6 @@
 Name:       a2ui-dali
 Summary:    DALi-based renderer for the A2UI protocol
-Version:    0.18.1
+Version:    0.18.2
 Release:    1
 Group:      Graphics & UI Framework/Libraries
 License:    Apache-2.0

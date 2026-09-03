@@ -5,6 +5,20 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.2] — 2026-09-03
+
+Automated release tracking **dali-ui v2.5.36.11230** (with `dali2-core` / `dali2-adaptor` `dali_2.5.37`).
+
+### Changed
+
+- Rebuild against dali-ui `v2.5.36.11230` — no renderer source changes required.
+
+### Compatibility
+
+- Built against `dali-ui v2.5.36.11230` with `dali2-core`/`dali2-adaptor` `dali_2.5.37` on the
+  desktop `dali-env` build. Gallery corpus verified against the previous release
+  (pixel-regression gate + visual judge). Conformance: 145/145.
+
 ## [0.18.1] — 2026-08-14
 
 Automated release tracking **dali-ui v2.5.33.11051** (with `dali2-core` / `dali2-adaptor` `dali_2.5.34`).
