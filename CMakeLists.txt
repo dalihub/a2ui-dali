@@ -1,7 +1,7 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 3.8.2)
 
 PROJECT(a2ui-dali
-  VERSION 0.18.2
+  VERSION 0.18.3
   DESCRIPTION "A DALi-based renderer for the A2UI protocol"
   LANGUAGES CXX C
 )
