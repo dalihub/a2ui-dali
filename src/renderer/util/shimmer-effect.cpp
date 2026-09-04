@@ -5,8 +5,8 @@
  * Shimmer skeleton-screen loading animation for DALi.
  *
  * Ported from ShimmerTransition.java:
- *   - Base color: #E5E5EA (slightly dark gray)
- *   - Highlight color: #F8F8FA (light)
+ *   - Base color: #3A3A3D (OneUI SurfaceContainer, dark)
+ *   - Highlight color: #636368 (OneUI Outline, dark)
  *   - Light band sweeps left-to-right, 1.5s loop, easeInEaseOut
  *   - Smooth gradient edges, no hard edges
  *

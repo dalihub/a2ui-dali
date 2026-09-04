@@ -74,19 +74,48 @@ const std::unordered_map<std::string, uint32_t>& BundledComposerWeb()
   return kPalette;
 }
 
-bool UseComposerPalette()
+// OneUI dark palette — values copied from OneUI's official oneui_color.json (dark theme).
+const std::unordered_map<std::string, uint32_t>& BundledOneUIDark()
+{
+  static const std::unordered_map<std::string, uint32_t> kPalette = {
+    {"Primary", 0x387AFF},
+    {"PrimaryHigh", 0x2E65D4},
+    {"Background", 0x010102},
+    {"BackgroundApp", 0x131315},
+    {"Surface", 0x1C1C1E},
+    {"SurfaceContainerLow", 0x252528},
+    {"SurfaceContainer", 0x3A3A3D},
+    {"SurfaceContainerHigh", 0x4D4D52},
+    {"SurfaceContainerSemi", 0x3A3A3D},
+    {"OnSurfaceContainerHighest", 0xFFFFFF},
+    {"OnSurfaceContainer", 0xD6D6D8},
+    {"OnSurfaceContainerLow", 0xB7B7BB},
+    {"OnSurfaceContainerFixed", 0xFCFCFF},
+    {"Outline", 0x636368},
+    {"OutlineLow", 0x434348},
+    {"Red", 0xF64141},
+    {"Green", 0x0BB075},
+  };
+  return kPalette;
+}
+
+// Default = OneUI dark theme. Set A2UI_THEME=oneui to fall back to OneUI light,
+// or A2UI_THEME=composer for the composer web palette.
+bool UseDarkPalette()
 {
   const char* t = std::getenv("A2UI_THEME");
-  return !(t && std::strcmp(t, "oneui") == 0); // default = composer web parity
+  return !(t && (std::strcmp(t, "oneui") == 0 || std::strcmp(t, "composer") == 0));
 }
 } // namespace
 
 UiColor A2uiTheme::Color(const std::string& id)
 {
-  // Target A (live composer) is the active styling reference: resolve from the
-  // composer-web palette by default; A2UI_THEME=oneui restores the OneUI look.
+  // Default = OneUI dark theme. A2UI_THEME=oneui → light, A2UI_THEME=composer → composer web.
   // Call sites are unchanged — they still ask by semantic colour id.
-  const auto& palette = UseComposerPalette() ? BundledComposerWeb() : BundledOneUILight();
+  const char* t = std::getenv("A2UI_THEME");
+  const auto& palette = UseDarkPalette() ? BundledOneUIDark()
+                      : (t && std::strcmp(t, "composer") == 0) ? BundledComposerWeb()
+                                                               : BundledOneUILight();
   auto it = palette.find(id);
   if(it != palette.end())
   {
