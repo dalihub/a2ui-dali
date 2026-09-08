@@ -39,7 +39,10 @@ float SizeButtonToLabel(FlexLayout button, Label labelChild)
 
   // Only an actual single glyph / emoji / symbol gets the fixed square; short ASCII
   // words like "Yes"/"No"/"OK" must be sized as text or they clip to a stub ("—").
-  bool isGlyphButton = (byteLen <= 4 && (hasNonAscii || byteLen <= 1));
+  // An empty string (data-bound label not yet arrived) must NOT be treated as a
+  // glyph button — it would set a fixed square width, and the text would not be
+  // centred when the value arrives. Use the default minimum width instead.
+  bool isGlyphButton = (byteLen > 0 && byteLen <= 4 && (hasNonAscii || byteLen <= 1));
   float btnWidth;
   if(isGlyphButton)
   {

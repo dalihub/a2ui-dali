@@ -87,6 +87,16 @@ void SurfaceComponentsModel::AddComponents(const TreeNode& componentsArray)
       comp.childId = childNode->GetString();
     }
 
+    // Set needsParentRerender based on component type.
+    // Container types: their parent's render logic depends on child content/type/properties.
+    // Leaf types: they self-manage updates via WatchBinding, no parent re-render needed.
+    if(comp.type == "Button" || comp.type == "Card" || comp.type == "Row" ||
+       comp.type == "Column" || comp.type == "Tabs" || comp.type == "List" ||
+       comp.type == "Modal")
+    {
+      comp.needsParentRerender = true;
+    }
+
     // Track modified IDs
     mLastModifiedIds.push_back(comp.id);
 
@@ -98,6 +108,27 @@ void SurfaceComponentsModel::AddComponents(const TreeNode& componentsArray)
     if(!comp.childId.empty())
     {
       mParentMap[comp.childId] = comp.id;
+    }
+
+    // Also set needsParentRerender if the PARENT is a container type.
+    // A leaf component (e.g. Text) inside a Button needs the Button to re-render
+    // so SizeButtonToLabel runs; inside a Card so FindFirstActionInSubtree runs;
+    // inside a Row/Column so flex layout logic runs with the new child, etc.
+    // The parent map was just updated above, so look up the parent here.
+    auto parentIt = mParentMap.find(comp.id);
+    if(parentIt != mParentMap.end())
+    {
+      auto pCompIt = mComponents.find(parentIt->second);
+      if(pCompIt != mComponents.end())
+      {
+        const std::string& ptype = pCompIt->second.type;
+        if(ptype == "Button" || ptype == "Card" || ptype == "Row" ||
+           ptype == "Column" || ptype == "Tabs" || ptype == "List" ||
+           ptype == "Modal")
+        {
+          comp.needsParentRerender = true;
+        }
+      }
     }
 
     // Upsert into map

@@ -318,6 +318,22 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
   int index = 0;
   for(const auto& childId : comp.childIds)
   {
+    // Partial render mode: if this child is NOT in the changed set, reuse its
+    // existing View from the DiffEngine and skip all layout processing. Only
+    // the parent and the changed child should be re-rendered; siblings keep
+    // their existing Views and layout params untouched.
+    if(mPartialRenderMode && mPartialRenderIds.find(childId) == mPartialRenderIds.end())
+    {
+      if(mDiffEngine.HasView(childId))
+      {
+        View cachedChild = mDiffEngine.GetView(childId);
+        flex.Add(cachedChild);
+        index++;
+        continue;
+      }
+      // Not in DiffEngine — fall through to normal render (new child)
+    }
+
     const ComponentModel* childComp = components.GetComponent(childId);
     // A default-sized Image placed directly in a Row is a list thumbnail — hint
     // RenderImage to build it small so it doesn't overflow the row. (Shrinking the

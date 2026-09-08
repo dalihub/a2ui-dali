@@ -179,6 +179,19 @@ View A2uiRenderer::RenderComponent(const std::string& id,
                                    const SurfaceComponentsModel& components,
                                    DataContext& ctx)
 {
+  // Partial render mode: if this component ID is NOT in the partial render set,
+  // reuse the existing View from the DiffEngine instead of re-rendering it.
+  // This lets a parent re-render run its layout logic while only re-rendering
+  // the specific child that changed — siblings keep their existing Views.
+  if(mPartialRenderMode && mPartialRenderIds.find(id) == mPartialRenderIds.end())
+  {
+    if(mDiffEngine.HasView(id))
+    {
+      return mDiffEngine.GetView(id);
+    }
+    // Not in DiffEngine either — fall through to normal render (new component)
+  }
+
   const ComponentModel* comp = components.GetComponent(id);
   if(!comp)
   {
@@ -765,6 +778,34 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
     return;
   }
 
+  // If this component needs its parent to be re-rendered, skip the initial
+  // render+splice — go directly to RerenderParent, which re-renders the parent
+  // (and only this child via partial render mode). This avoids redundant work:
+  // the initial render would be thrown away when RerenderParent creates a new
+  // parent view that includes a fresh copy of this child.
+  //
+  // EXCEPTION: if the parent is "root", RerenderParent skips it (root has no
+  // grandparent to splice into). Fall through to the normal in-place replace
+  // path instead — the leaf component's own WatchBinding handles its content
+  // update, and root's layout is already correct.
+  if(comp->needsParentRerender)
+  {
+    std::string parentId = components.GetParentId(componentId);
+    if(parentId.empty())
+    {
+      DALI_LOG_ERROR("[A2UI] Incremental: component '%s' has no parent for re-render\n", componentId.c_str());
+      return;
+    }
+    if(parentId != "root")
+    {
+      // Retire watchers for this component before the parent re-renders it.
+      RetireComponentWatchers(surface.GetDataModel(), componentId);
+      RerenderParent(surface, parentId, ctx, componentId);
+      return;
+    }
+    // Parent is root — fall through to normal in-place replace path.
+  }
+
   // Capture the old view BEFORE RenderComponent — RenderComponent calls
   // RegisterView() internally, which would overwrite the old mapping.
   View oldView = isNew ? View() : mDiffEngine.GetView(componentId);
@@ -773,8 +814,26 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
   // RenderComponent will re-register fresh ones for the new subtree.
   RetireComponentWatchers(surface.GetDataModel(), componentId);
 
+  // For a container component being replaced in-place, set partial render mode
+  // so that children NOT in the changed set reuse their existing Views from
+  // the DiffEngine instead of being re-rendered from scratch. Only this
+  // component (and its newly-arrived children) should be rendered fresh.
+  // This is the same optimization RerenderParent uses, applied to the
+  // in-place replace path (e.g. when the parent is root).
+  bool wasPartialRender = mPartialRenderMode;
+  auto savedPartialIds = mPartialRenderIds;
+  mPartialRenderMode = true;
+  mPartialRenderIds.clear();
+  mPartialRenderIds.insert(componentId);
+  // Also include any children that are in this update's modified set — they
+  // need fresh renders too. The component itself is always re-rendered.
+
   // Render the new subtree
   View newView = RenderComponent(componentId, components, ctx);
+
+  // Restore previous partial render state.
+  mPartialRenderMode = wasPartialRender;
+  mPartialRenderIds = savedPartialIds;
   if(!newView)
   {
     DALI_LOG_ERROR("[A2UI] Incremental: RenderComponent returned null for '%s'\n", componentId.c_str());
@@ -802,10 +861,6 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
     int index = components.GetChildIndexInParent(componentId);
     if(index >= 0 && static_cast<uint32_t>(index) < parentView.GetChildViewCount())
     {
-      // Insert at the correct position — but dali-ui View doesn't have InsertAt,
-      // so we Remove all children after the insertion point, Add the new one,
-      // then re-Add the rest. For simplicity (and since new children are typically
-      // appended at the end), just Add at the end if index == count.
       parentView.Add(newView);
     }
     else
@@ -813,12 +868,7 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
       // Append at end (common case for template children growth)
       parentView.Add(newView);
     }
-
-    // Re-render the parent container so its child loop (flex params, pinning,
-    // alignment) runs with all children present. Without this, a child added
-    // incrementally keeps the placeholder's empty flex params and can push its
-    // siblings off-screen.
-    RerenderParent(surface, parentId, ctx);
+    // Leaf component: no parent re-render needed — the Add above is sufficient.
   }
   else
   {
@@ -828,8 +878,6 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
       DALI_LOG_ERROR("[A2UI] Incremental: old view for '%s' not in DiffEngine\n", componentId.c_str());
       return;
     }
-
-
 
     // Copy layout params so the replacement keeps its slot
     CopyLayoutParams(oldView, newView);
@@ -880,16 +928,12 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
         break;
       }
     }
-
-    // Re-render the parent container so its child loop (flex params, pinning,
-    // alignment) runs with the updated child — e.g. when a placeholder is
-    // replaced by the real component.
-    RerenderParent(surface, parentId, ctx);
+    // Leaf component: no parent re-render needed — the replace above is sufficient.
   }
 }
 
 void A2uiRenderer::RerenderParent(SurfaceModel& surface, const std::string& parentId,
-                                  DataContext& ctx)
+                                  DataContext& ctx, const std::string& changedChildId)
 {
   const SurfaceComponentsModel& components = surface.GetComponentsModel();
   const ComponentModel* parentComp = components.GetComponent(parentId);
@@ -917,7 +961,24 @@ void A2uiRenderer::RerenderParent(SurfaceModel& surface, const std::string& pare
     RetireComponentWatchers(surface.GetDataModel(), parentComp->childId);
   }
 
+  // Partial render mode: when changedChildId is specified, only the parent and
+  // that child are re-rendered. Other children reuse their existing Views from
+  // the DiffEngine (RenderComponent checks mPartialRenderMode and returns the
+  // cached View for IDs not in mPartialRenderIds).
+  if(!changedChildId.empty())
+  {
+    mPartialRenderMode = true;
+    mPartialRenderIds.clear();
+    mPartialRenderIds.insert(parentId);
+    mPartialRenderIds.insert(changedChildId);
+  }
+
   View parentNewView = RenderComponent(parentId, components, ctx);
+
+  // Always clear partial render mode after the parent render completes.
+  mPartialRenderMode = false;
+  mPartialRenderIds.clear();
+
   if(!parentNewView) return;
 
   CopyLayoutParams(parentOldView, parentNewView);

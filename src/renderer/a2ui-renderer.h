@@ -29,6 +29,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace A2ui
@@ -309,8 +310,12 @@ private:
   /// parent's child loop (flex params, pinning, alignment) runs with all
   /// children present. Retires watchers for the parent and all its children,
   /// then splices the new parent view into the grandparent.
+  ///
+  /// When changedChildId is non-empty, partial render mode is used: only the
+  /// parent and the named child are re-rendered; other children reuse their
+  /// existing Views from the DiffEngine. When empty, the full subtree is rebuilt.
   void RerenderParent(SurfaceModel& surface, const std::string& parentId,
-                      DataContext& ctx);
+                      DataContext& ctx, const std::string& changedChildId = "");
 
   /// Filter changedIds to only those whose ancestors are NOT also in the set.
   /// A changed ancestor implies the descendant is rebuilt as part of the ancestor's
@@ -328,6 +333,14 @@ private:
   /// Mutable because RecordWatch is const (called from const WatchBinding etc).
   mutable std::unordered_map<std::string, std::vector<uint32_t>> mComponentWatchers;
 
+  // === Partial rendering (local render) ===
+
+  // When a parent needs to be re-rendered because a child changed, we don't want
+  // to re-render ALL children — only the changed one. mPartialRenderMode enables
+  // this: RenderComponent checks it and, for IDs NOT in mPartialRenderIds,
+  // returns the existing View from the DiffEngine instead of re-rendering.
+  bool mPartialRenderMode = false;
+  std::unordered_set<std::string> mPartialRenderIds;
 };
 
 
