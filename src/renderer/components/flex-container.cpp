@@ -575,6 +575,17 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
     index++;
   }
 
+  // Stagger-reveal all direct children with an upward-floating animation so
+  // every Row/Column's children appear one by one (fade + float up) instead
+  // of popping in all at once. Only fires when the static childIds path was
+  // taken (index > 0).
+  if(index > 0)
+  {
+    StaggerRevealChildren(flex);
+  }
+
+  mTextWidthBudget = savedBudget;
+
   mTextWidthBudget = savedBudget;
   return flex;
 }

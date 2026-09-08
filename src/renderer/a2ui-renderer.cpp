@@ -641,7 +641,8 @@ UiColor A2uiRenderer::ParseHexColor(const char* hex)
 // ========================================================================
 // Stagger reveal — fade-in children one by one instead of all at once
 // ========================================================================
-void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float fadeSec)
+void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float fadeSec,
+                                         float floatOffsetDp)
 {
   if(!container) return;
 
@@ -655,33 +656,118 @@ void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float
   const uint32_t childCount = container.GetChildViewCount();
   if(childCount == 0) return;
 
-  // One Animation holds all per-child AnimateTo with staggered TimePeriods so they
-  // overlap within a single timeline (cleaner than N separate Animations whose
-  // lifetimes we'd have to track individually).
-  float totalDuration = staggerSec * static_cast<float>(childCount - 1) + fadeSec;
-  if(totalDuration <= 0.0f) return;
+  // The FlexLayout hasn't positioned the children yet at this point (we're
+  // still inside the render pass), so POSITION_Y is 0 for every child.
+  // Reading it now, shifting by the offset, and animating back to 0 would
+  // BAKE 0 — overriding the layout's real positions and collapsing all
+  // children to the same spot. Defer the position read + animation to a
+  // short timer so the layout has run and real positions are available.
+  float offsetPx = Metrics::Dp(floatOffsetDp);
 
-  Animation anim = Animation::New(totalDuration);
-  anim.SetEndAction(Animation::BAKE);       // bake final opacity=1.0 so it sticks after play
-  anim.SetDisconnectAction(Animation::BAKE);
+  // Capture the parameters for the deferred lambda.
+  View capturedContainer = container;
+  A2uiRenderer* self = this;
 
+  // Prune finished timers (one-shot timers that have already fired).
+  mStaggerTimers.erase(
+    std::remove_if(mStaggerTimers.begin(), mStaggerTimers.end(),
+      [](const Dali::Timer& t) { return !t || !t.IsRunning(); }),
+    mStaggerTimers.end());
+
+  // Set opacity to 0 immediately so children are invisible until the float plays.
   for(uint32_t i = 0; i < childCount; ++i)
   {
     View child = container.GetChildViewAt(i);
-    if(!child) continue;
-
-    // Start invisible — the fade-in brings it from 0 → 1.
-    child.SetProperty(Actor::Property::OPACITY, 0.0f);
-
-    // Each child begins its fade at i*staggerSec and lasts fadeSec.
-    float delay = staggerSec * static_cast<float>(i);
-    anim.AnimateTo(Property(child, Actor::Property::OPACITY), 1.0f,
-                   AlphaFunction::EASE_OUT,
-                   TimePeriod(delay, fadeSec));
+    if(child) child.SetProperty(Actor::Property::OPACITY, 0.0f);
   }
 
-  anim.Play();
-  mStaggerAnimations.push_back(anim);  // keep alive for the duration of playback
+  Dali::Timer timer = Dali::Timer::New(100);
+  timer.TickSignal().Connect(this,
+    [capturedContainer, staggerSec, fadeSec, offsetPx, self]() -> bool {
+      if(!capturedContainer) return false;
+
+      const uint32_t count = capturedContainer.GetChildViewCount();
+      if(count == 0) return false;
+
+      float totalDuration = staggerSec * static_cast<float>(count - 1) + fadeSec;
+      if(totalDuration <= 0.0f) return false;
+
+      Animation anim = Animation::New(totalDuration);
+      anim.SetEndAction(Animation::BAKE);
+      anim.SetDisconnectAction(Animation::BAKE);
+
+      for(uint32_t i = 0; i < count; ++i)
+      {
+        View child = capturedContainer.GetChildViewAt(i);
+        if(!child) continue;
+
+        // Now the layout has run — read the REAL position.
+        float currentY = child.GetProperty<float>(Actor::Property::POSITION_Y);
+        // Shift down so the child floats UP into place.
+        child.SetProperty(Actor::Property::POSITION_Y, currentY + offsetPx);
+
+        float delay = staggerSec * static_cast<float>(i);
+        anim.AnimateTo(Property(child, Actor::Property::OPACITY), 1.0f,
+                       AlphaFunction::EASE_OUT,
+                       TimePeriod(delay, fadeSec));
+        anim.AnimateTo(Property(child, Actor::Property::POSITION_Y), currentY,
+                       AlphaFunction::EASE_OUT,
+                       TimePeriod(delay, fadeSec));
+      }
+
+      anim.Play();
+      self->mStaggerAnimations.push_back(anim);
+      return false; // one-shot
+    });
+  timer.Start();
+  // Keep the timer alive — store it in a member so it isn't GC'd.
+  mStaggerTimers.push_back(timer);
+}
+
+// ========================================================================
+// FloatInView — single-view upward float-in for incrementally-added components
+// ========================================================================
+void A2uiRenderer::FloatInView(View view, float fadeSec, float floatOffsetDp)
+{
+  if(!view || fadeSec <= 0.0f) return;
+
+  // Prune finished animations.
+  mFloatAnimations.erase(
+    std::remove_if(mFloatAnimations.begin(), mFloatAnimations.end(),
+      [](const Animation& a) { return !a || a.GetState() == Animation::STOPPED; }),
+    mFloatAnimations.end());
+
+  // Same layout-timing issue as StaggerRevealChildren: POSITION_Y is 0 right
+  // after RerenderParent because the FlexLayout hasn't run yet. Defer the
+  // position read + animation to a short timer.
+  float offsetPx = Metrics::Dp(floatOffsetDp);
+  View capturedView = view;
+  A2uiRenderer* self = this;
+
+  // Set opacity to 0 immediately so the view is invisible until the float plays.
+  view.SetProperty(Actor::Property::OPACITY, 0.0f);
+
+  Dali::Timer timer = Dali::Timer::New(100);
+  timer.TickSignal().Connect(this,
+    [capturedView, fadeSec, offsetPx, self]() mutable -> bool {
+      if(!capturedView) return false;
+
+      float currentY = capturedView.GetProperty<float>(Actor::Property::POSITION_Y);
+      capturedView.SetProperty(Actor::Property::POSITION_Y, currentY + offsetPx);
+
+      Animation anim = Animation::New(fadeSec);
+      anim.SetEndAction(Animation::BAKE);
+      anim.SetDisconnectAction(Animation::BAKE);
+      anim.AnimateTo(Property(capturedView, Actor::Property::OPACITY), 1.0f,
+                     AlphaFunction::EASE_OUT);
+      anim.AnimateTo(Property(capturedView, Actor::Property::POSITION_Y), currentY,
+                     AlphaFunction::EASE_OUT);
+      anim.Play();
+      self->mFloatAnimations.push_back(anim);
+      return false; // one-shot
+    });
+  timer.Start();
+  mFloatTimers.push_back(timer);
 }
 
 
@@ -869,6 +955,14 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
       parentView.Add(newView);
     }
     // Leaf component: no parent re-render needed — the Add above is sufficient.
+
+    // Float-in the newly added component with an upward-floating animation.
+    // The view registered in the DiffEngine for componentId is the fresh one
+    // now on stage — fetch it and animate.
+    {
+      View freshView = mDiffEngine.GetView(componentId);
+      if(freshView) FloatInView(freshView);
+    }
   }
   else
   {
@@ -1004,6 +1098,14 @@ void A2uiRenderer::RerenderParent(SurfaceModel& surface, const std::string& pare
       for(const auto& v : after) grandParentView.Add(v);
       break;
     }
+  }
+
+  // Float-in the changed child so it appears with the same upward-floating
+  // feel as stagger-revealed children.
+  if(!changedChildId.empty())
+  {
+    View freshView = mDiffEngine.GetView(changedChildId);
+    if(freshView) FloatInView(freshView);
   }
 }
 

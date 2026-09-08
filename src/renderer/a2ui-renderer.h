@@ -26,6 +26,7 @@
 #include "component-registry.h"
 #include <dali-ui-foundation/dali-ui-foundation.h>
 #include <dali/public-api/events/tap-gesture-detector.h>
+#include <dali/public-api/adaptor-framework/timer.h>
 #include <functional>
 #include <memory>
 #include <string>
@@ -164,13 +165,24 @@ private:
                              std::function<void(Dali::Ui::View item, int index)> prepareItem,
                              std::function<void(Dali::Ui::View container)> onComplete = nullptr);
 
-  /// Stagger-reveal children of @p container one by one with a fade-in animation.
-  /// Sets every child's opacity to 0, then animates each in sequence with a
-  /// per-item time offset so they appear progressively rather than all at once.
-  /// @param container   The FlexLayout whose direct children should be revealed.
-  /// @param staggerSec  Delay between each child's reveal start.
-  /// @param fadeSec     Duration of each child's fade-in.
-  void StaggerRevealChildren(Dali::Ui::View container, float staggerSec = 0.5f, float fadeSec = 0.5f);
+  /// Stagger-reveal children of @p container one by one with a fade-in +
+  /// upward-floating animation. Sets every child's opacity to 0 and shifts it
+  /// down by @p floatOffsetDp, then animates each in sequence with a per-item
+  /// time offset so they appear progressively rather than all at once.
+  /// @param container     The FlexLayout whose direct children should be revealed.
+  /// @param staggerSec    Delay between each child's reveal start.
+  /// @param fadeSec       Duration of each child's fade-in + float-up.
+  /// @param floatOffsetDp Distance (dp) each child starts below its final position.
+  void StaggerRevealChildren(Dali::Ui::View container, float staggerSec = 0.5f,
+                             float fadeSec = 0.5f, float floatOffsetDp = 16.0f);
+
+  /// Float-in a single view with a fade + upward Y-position animation.
+  /// Used for incrementally-added components so they appear with the same
+  /// upward-floating feel as stagger-revealed children.
+  /// @param view          The view to animate.
+  /// @param fadeSec       Duration of the fade-in + float-up.
+  /// @param floatOffsetDp Distance (dp) the view starts below its final position.
+  void FloatInView(Dali::Ui::View view, float fadeSec = 0.5f, float floatOffsetDp = 16.0f);
 
   // === Remote / keyboard focus ===
   /// Make @p view reachable by the TV remote: mark it keyboard-focusable so the
@@ -282,6 +294,15 @@ private:
   // finishes, and children would stay at opacity 0. Completed animations are
   // pruned at the start of each StaggerRevealChildren call.
   std::vector<Dali::Animation> mStaggerAnimations;
+  // Keeps single-view float-in animations alive (for incrementally-added
+  // components). Same rationale as mStaggerAnimations: without holding a
+  // reference, Dali would GC the Animation before it finishes.
+  std::vector<Dali::Animation> mFloatAnimations;
+  // Timers that defer the stagger/float animation until layout has positioned
+  // children (POSITION_Y is 0 during the render pass). Kept alive here so Dali
+  // doesn't GC them before they fire.
+  std::vector<Dali::Timer> mStaggerTimers;
+  std::vector<Dali::Timer> mFloatTimers;
   // Pointer to current components model (valid only during Render call)
   const SurfaceComponentsModel* mCurrentComponents = nullptr;
   DataContext*                   mCurrentCtx = nullptr;
