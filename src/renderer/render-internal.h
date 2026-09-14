@@ -26,8 +26,10 @@
 #include <dali-ui-foundation/public-api/text/text-enumerations.h>
 #include <dali-ui-foundation/public-api/text/style/underline.h>
 
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
+#include <limits>
 #include <sstream>
 #include <fstream>
 
@@ -61,7 +63,19 @@ inline void ApplyItemGap(View item, bool horizontal, float gap, bool isFirst)
 {
   if(!item || isFirst || gap <= 0.0f) return;
   const int16_t g = static_cast<int16_t>(gap);
-  const Extents m = item.GetMargin();
+  // dali-ui 2.5.37 made Dali::Ui::Insets an alias of the new float Dali::Insets (dali-core 2.5.38),
+  // which dropped the implicit `operator Dali::Extents()` this read used to go through. Reproduce
+  // that conversion — clamp into the int16 range, then truncate — instead of keeping the raw float:
+  // the preserved cross-axis margin must stay the same integer it was, or every item shifts by a
+  // sub-pixel amount against the captured baseline. SetMargin() still takes Extents, so the writes
+  // below are unchanged.
+  const auto toExtent = [](float value) {
+    return static_cast<int16_t>(std::clamp(value,
+                                           static_cast<float>(std::numeric_limits<int16_t>::min()),
+                                           static_cast<float>(std::numeric_limits<int16_t>::max())));
+  };
+  const Dali::Insets margin = item.GetMargin();
+  const Extents      m(toExtent(margin.start), toExtent(margin.end), toExtent(margin.top), toExtent(margin.bottom));
   if(horizontal)
     item.SetMargin(Extents(g, 0, m.top, m.bottom));  // main = start/end; cross = top/bottom preserved
   else

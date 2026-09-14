@@ -54,6 +54,13 @@ std::string StripMarkdown(const std::string& in)
 //       raw `lineH * GetLineCount()` would resolve to 0 and hide the row;
 //   (2) only write the height when it actually differs, so a repeated call cannot spin an
 //       endless invalidate -> re-measure loop.
+//
+// Unlike the literal reservation in RenderText, this one still trusts `Metrics::LineHeight` to
+// cover a real line box. That holds for every variant a bound value currently uses (body/caption
+// wrap inside it), but it is the same hard cap: if a STREAMED h1/h2/h3 value ever wraps, its last
+// line will be dropped and ellipsized the way corpus 30's literal h3 title was. Fix it the way
+// RenderText does — but reset the line cap (Text::MAXIMUM_LINES_UNLIMITED) before GetLineCount(),
+// or the cap feeds itself the count it just imposed and the box can never grow again.
 void FitLabelHeightToLines(Label label, float width)
 {
   if(width <= 0.0f) return;                 // not laid out yet — the reserved height stands
@@ -88,46 +95,6 @@ View A2uiRenderer::RenderText(const ComponentModel& comp, DataContext& ctx)
   label.SetTextColor(COLOR_TEXT_DEFAULT);
   label.SetMultiLine(wrappable);
   label.SetLineWrapMode(Text::LineWrapMode::WORD);
-
-  // DALi Label inside a flex-grown parent sometimes measures height=0 when the parent's
-  // resolved width is only known after the layout pass, so we reserve a height estimate.
-  // Estimate chars-per-line from the font size against the card content width, and use the
-  // web type scale's line height per line so wrapped copy occupies the same vertical space
-  // as the web renderer. All terms are dp-scaled, so the estimate holds at any capture DPI.
-  float lineH = Metrics::LineHeight(fontSize);
-  if(!text.empty())
-  {
-    // Available width: the narrow-column budget if we're inside a Row's column, else the full
-    // card content width. 0.58 (avg glyph advance / font size) is deliberately a touch wide so
-    // the line count rounds UP rather than down — under-counting clips the wrap (the visible
-    // bug), over-counting only adds a little slack, and the cards currently run short anyway.
-    float availW = (mTextWidthBudget > 0.0f) ? mTextWidthBudget : Metrics::CardContentWidth();
-    // Safety margin: the budget is an ESTIMATE, and a Row's leading image/sibling can overshoot
-    // its own width estimate, leaving the text column a touch narrower than `availW` at render
-    // time. Shave the budget ~8% so a boundary-length name (h4 "Wireless Headphones Pro") reserves
-    // the 2 lines it actually wraps to instead of 1 and getting ellipsized. Only adds height slack.
-    availW *= 0.92f;
-    int charsPerLine = static_cast<int>(availW / (fontSize * 0.58f));
-    if(charsPerLine < 6) charsPerLine = 6;
-    int estLines = wrappable ? static_cast<int>((text.size() + charsPerLine - 1) / charsPerLine) : 1;
-    if(estLines < 1) estLines = 1;
-    if(estLines > 20) estLines = 20;
-    label.SetRequestedHeight(lineH * estLines);
-  }
-  else
-  {
-    // Data-bound text is usually empty at first paint (its value arrives in a later
-    // updateDataModel); reserve one line so the flex keeps the slot and the watch's
-    // update becomes visible instead of the row collapsing the value away.
-    bool dataBound = textNode && textNode->GetType() == TreeNode::OBJECT;
-    label.SetRequestedHeight(dataBound ? lineH : WRAP_CONTENT);
-  }
-
-  // NOTE: do NOT re-fit this height once layout settles (e.g. from View::LayoutFinishedSignal).
-  // The estimate above IS the height the renderer draws with by design — see the contract on
-  // FitLabelHeightToLines. Fitting a literal label down to its true line count shortens every
-  // label that reserved a line it did not fill, which moves card bottoms and inter-element seams
-  // by a whole line height and ellipsizes wrapped copy onto one line (02/12/18/22/32/35).
 
   // Caption/body color hints
   if(strcmp(variant, "caption") == 0)
@@ -173,6 +140,71 @@ View A2uiRenderer::RenderText(const ComponentModel& comp, DataContext& ctx)
   {
     label.SetFontSlant(Text::FontSlant::ITALIC);
   }
+
+  // DALi Label inside a flex-grown parent sometimes measures height=0 when the parent's
+  // resolved width is only known after the layout pass, so we reserve a height estimate.
+  // Estimate chars-per-line from the font size against the card content width, and use the
+  // web type scale's line height per line so wrapped copy occupies the same vertical space
+  // as the web renderer. All terms are dp-scaled, so the estimate holds at any capture DPI.
+  //
+  // Reserved AFTER the weight/slant above, not with the other Label setup: the reservation
+  // measures the label's own line box (see below), and that comes from the face the text is
+  // actually laid out with — a SEMI_BOLD heading measured as regular reserves too little.
+  float lineH = Metrics::LineHeight(fontSize);
+  if(!text.empty())
+  {
+    // Available width: the narrow-column budget if we're inside a Row's column, else the full
+    // card content width. 0.58 (avg glyph advance / font size) is deliberately a touch wide so
+    // the line count rounds UP rather than down — under-counting clips the wrap (the visible
+    // bug), over-counting only adds a little slack, and the cards currently run short anyway.
+    float availW = (mTextWidthBudget > 0.0f) ? mTextWidthBudget : Metrics::CardContentWidth();
+    // Safety margin: the budget is an ESTIMATE, and a Row's leading image/sibling can overshoot
+    // its own width estimate, leaving the text column a touch narrower than `availW` at render
+    // time. Shave the budget ~8% so a boundary-length name (h4 "Wireless Headphones Pro") reserves
+    // the 2 lines it actually wraps to instead of 1 and getting ellipsized. Only adds height slack.
+    availW *= 0.92f;
+    int charsPerLine = static_cast<int>(availW / (fontSize * 0.58f));
+    if(charsPerLine < 6) charsPerLine = 6;
+    int estLines = wrappable ? static_cast<int>((text.size() + charsPerLine - 1) / charsPerLine) : 1;
+    if(estLines < 1) estLines = 1;
+    if(estLines > 20) estLines = 20;
+
+    float reserved = lineH * estLines;
+    if(estLines > 1)
+    {
+      // The reserved box is a HARD cap on how many lines dali-ui lays out: a line whose bottom
+      // would cross it is dropped and the last one that fits is ellipsized instead (layout-engine
+      // EllipsisLine). `lineH` is the WEB type scale's line height, and it used to be the roomier
+      // of the two, so `lineH * estLines` always held estLines real lines. With dali-ui 2.5.37 /
+      // dali_2.5.38 the text line box grew taller than it (glyphs also got a touch narrower), so a
+      // wrapped h3 title lost its second line: corpus 30's "Customize your invitation" rendered
+      // "Customize your invit…" in a slot still two lines tall.
+      //
+      // So measure instead of assuming. SetMaximumLines (new in 2.5.37) pins the layout to the
+      // count we reserved for — the same cap the box height used to impose, now stated outright —
+      // and GetHeightForWidth then reports what those lines really need, fallback faces included.
+      // Kept as a FLOOR: a label whose real line box is shorter than the web line height keeps the
+      // web reservation that positions everything around it, so only labels that would otherwise
+      // lose content grow, and by the line-box difference alone.
+      label.SetMaximumLines(estLines);
+      reserved = std::max(reserved, label.GetHeightForWidth(availW));
+    }
+    label.SetRequestedHeight(reserved);
+  }
+  else
+  {
+    // Data-bound text is usually empty at first paint (its value arrives in a later
+    // updateDataModel); reserve one line so the flex keeps the slot and the watch's
+    // update becomes visible instead of the row collapsing the value away.
+    bool dataBound = textNode && textNode->GetType() == TreeNode::OBJECT;
+    label.SetRequestedHeight(dataBound ? lineH : WRAP_CONTENT);
+  }
+
+  // NOTE: do NOT re-fit this height once layout settles (e.g. from View::LayoutFinishedSignal).
+  // The estimate above IS the height the renderer draws with by design — see the contract on
+  // FitLabelHeightToLines. Fitting a literal label down to its true line count shortens every
+  // label that reserved a line it did not fill, which moves card bottoms and inter-element seams
+  // by a whole line height and ellipsizes wrapped copy onto one line (02/12/18/22/32/35).
 
   // Underline
   const TreeNode* underlineNode = comp.rawNode->Find("underline");
