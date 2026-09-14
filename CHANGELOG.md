@@ -5,6 +5,24 @@ All notable changes to **a2ui-dali** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] — 2026-09-14
+
+Automated release tracking **dali-ui v2.5.37.11319** (with `dali2-core` / `dali2-adaptor` `dali_2.5.38`).
+
+### Changed
+
+- Measure the reserved height for wrapped literal text instead of assuming the web type-scale line height covers a real line box: for multi-line labels `RenderText` now pins the layout with `SetMaximumLines(estLines)` (new in dali-ui `v2.5.37.11319`) and reserves `GetHeightForWidth` when that is taller. Fixes wrapped headings losing their last line to the layout engine's ellipsis after the text line box grew taller than the web line height (corpus 30's h3 title rendered `Customize your invit…` in a two-line-tall slot).
+- Keep the web line-height estimate as a floor for that reservation, so a label whose real line box is shorter than the web line height keeps its existing height and only labels that would otherwise lose content grow — by the line-box difference alone.
+- Reserve the label height after the variant weight and slant are applied: the reservation block moved below that setup in `RenderText` so the measurement uses the face the text is actually laid out with, rather than measuring a `SEMI_BOLD` heading as regular.
+- Adapt `ApplyItemGap` to `Dali::Ui::Insets` becoming an alias of the new float `Dali::Insets` (dali-ui `v2.5.37.11319` / `dali-core dali_2.5.38`), which dropped the implicit `operator Dali::Extents()` the margin read relied on. The preserved cross-axis margin is now clamped into the `int16_t` range and truncated explicitly, reproducing the old conversion so items keep their previous integer margins; `SetMargin` still takes `Extents`.
+- Document on `FitLabelHeightToLines` that the data-bound reservation carries the same line-box cap, and that fixing it there requires resetting the line cap (`Text::MAXIMUM_LINES_UNLIMITED`) before `GetLineCount()`. No behavior change on the streamed path.
+
+### Compatibility
+
+- Built against `dali-ui v2.5.37.11319` with `dali2-core`/`dali2-adaptor` `dali_2.5.38` on the
+  desktop `dali-env` build. Gallery corpus verified against the previous release
+  (pixel-regression gate + visual judge). Conformance: 145/145.
+
 ## [0.18.3] — 2026-09-03
 
 Documentation correction release for the dali-ui **v2.5.36.11230** compatibility
