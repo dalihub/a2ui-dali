@@ -73,6 +73,11 @@ public:
   /// without releasing its old detectors shows up here as a count that keeps climbing).
   size_t GetTapDetectorCount() const { return mTapDetectors.size(); }
 
+  /// How many times StaggerRevealChildren has actually played (diagnostics —
+  /// a container re-staggering already-visible children shows up here as a
+  /// count that keeps climbing across incremental updates).
+  size_t GetStaggerPlayedCount() const { return mStaggerPlayedCount; }
+
   ActionDispatcher& GetActionDispatcher() { return mActionDispatcher; }
   DiffEngine& GetDiffEngine() { return mDiffEngine; }
   ViewPool& GetViewPool() { return mViewPool; }
@@ -175,6 +180,18 @@ private:
   /// @param floatOffsetDp Distance (dp) each child starts below its final position.
   void StaggerRevealChildren(Dali::Ui::View container, float staggerSec = 0.5f,
                              float fadeSec = 0.5f, float floatOffsetDp = 16.0f);
+
+  /// V2: stagger-reveal an explicit subset of views (the freshly-rendered
+  /// children of a container) instead of every child of a container, so that
+  /// reused/already-visible children are never re-animated.
+  void StaggerRevealChildren(const std::vector<Dali::Ui::View>& views,
+                             float staggerSec = 0.5f, float fadeSec = 0.5f,
+                             float floatOffsetDp = 16.0f);
+
+  /// True when the DiffEngine holds a REAL rendered view for @p id (not a
+  /// shimmer placeholder). Used to tell a component's first real appearance
+  /// from an already-visible one.
+  bool HasRealView(const std::string& id) const;
 
   /// Float-in a single view with a fade + upward Y-position animation.
   /// Used for incrementally-added components so they appear with the same
@@ -362,6 +379,31 @@ private:
   // returns the existing View from the DiffEngine instead of re-rendering.
   bool mPartialRenderMode = false;
   std::unordered_set<std::string> mPartialRenderIds;
+
+  // Tracks which array paths have already had their stagger-reveal animation
+  // played. Persists across BuildTemplateChildren re-creations (which happen
+  // every time RerenderParent re-renders the parent). Without this, each
+  // re-creation gets a fresh staggerPlayed=false, and the next data-watch
+  // callback re-triggers the stagger animation on ALL children.
+  std::unordered_set<std::string> mStaggerPlayedPaths;
+
+  // Tracks which component IDs have already had their float-in animation
+  // played. Prevents FloatInView from re-triggering on views that are
+  // re-created by RerenderParent but were already visible to the user.
+  // Without this, RerenderParent's rebuild of a parent causes all its
+  // children to flash invisible (opacity→0) and float up again.
+  std::unordered_set<std::string> mFloatedComponentIds;
+
+  // Tracks component IDs whose DiffEngine-cached view is only a SHIMMER
+  // placeholder (a forward-referenced component that has not arrived yet), as
+  // opposed to a real rendered view. This is what lets the stagger-reveal
+  // play ONLY for first real appearances: a reused real view and a shimmer
+  // placeholder are both in the DiffEngine, but neither may be animated —
+  // the former is already visible, the latter has no content yet.
+  std::unordered_set<std::string> mShimmerIds;
+
+  // Total StaggerRevealChildren plays so far (see GetStaggerPlayedCount).
+  size_t mStaggerPlayedCount = 0;
 };
 
 

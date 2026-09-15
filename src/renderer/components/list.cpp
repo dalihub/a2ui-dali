@@ -165,7 +165,12 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
             itemIndex++;
           }
 
-          StaggerRevealChildren(listContainer);
+          // Guard: skip stagger on partial/incremental re-renders to prevent
+          // repeated upward-floating animations on every data update.
+          if(!mPartialRenderMode)
+          {
+            StaggerRevealChildren(listContainer);
+          }
 
           return listContainer;
         }
@@ -174,10 +179,19 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
   }
 
   // Simple list: children is an array of component IDs
+  // V2: stagger only children making their FIRST real appearance (same rule
+  // as flex-container.cpp) — reused views and shimmer placeholders are never
+  // re-animated.
   int index = 0;
+  std::vector<View> freshChildren;
   for(const auto& childId : comp.childIds)
   {
+    const bool hadRealView = HasRealView(childId);
     View child = RenderComponent(childId, components, ctx);
+    if(child && components.GetComponent(childId) && !hadRealView)
+    {
+      freshChildren.push_back(child);
+    }
     sizeItemMainAxis(child);
     ApplyItemGap(child, horizontal, gap, index == 0);
     listContainer.Add(child);
@@ -185,11 +199,10 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
   }
 
   // Simple childIds path: children were added synchronously above, so trigger
-  // the stagger directly. Guarded by index > 0 so an empty list doesn't
-  // create a pointless zero-duration animation.
-  if(index > 0)
+  // the stagger directly.
+  if(!freshChildren.empty())
   {
-    StaggerRevealChildren(listContainer);
+    StaggerRevealChildren(freshChildren);
   }
 
   return listContainer;

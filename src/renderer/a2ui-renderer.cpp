@@ -66,6 +66,33 @@ bool IsActivationKey(const std::string& keyName)
          keyName == "Select" || keyName == "Enter";
 }
 
+// RAII guard for mPartialRenderMode / mPartialRenderIds. PART12 clears them
+// so a never-before-rendered subtree renders fresh (and its own containers
+// may stagger), but the previous code only saved the old values into dead
+// variables — the cleared state leaked into the rest of the PARENT's render,
+// so the parent's `index > 0 && !mPartialRenderMode` check passed and
+// StaggerRevealChildren replayed on children that were only being REUSED
+// (already visible — the movie_detail block floated up a second time when
+// recommendations_section arrived). Restoring on scope exit confines the
+// fresh render to the new subtree. Also exception-safe.
+struct PartialRenderStateGuard
+{
+  bool&                           mode;
+  std::unordered_set<std::string>& ids;
+  bool                            savedMode;
+  std::unordered_set<std::string> savedIds;
+
+  PartialRenderStateGuard(bool& m, std::unordered_set<std::string>& i)
+  : mode(m), ids(i), savedMode(m), savedIds(i)
+  {
+  }
+  ~PartialRenderStateGuard()
+  {
+    mode = savedMode;
+    ids  = savedIds;
+  }
+};
+
 } // anonymous namespace
 
 A2uiRenderer::A2uiRenderer()
@@ -192,13 +219,35 @@ View A2uiRenderer::RenderComponent(const std::string& id,
     // Not in DiffEngine either — fall through to normal render (new component)
   }
 
+  // When a fresh component (not yet in DiffEngine) is rendered under partial
+  // render mode, its ENTIRE subtree is new — children should render fresh and
+  // get their stagger animations. Temporarily clear mPartialRenderMode so the
+  // subtree's RenderComponent calls don't reuse stale DiffEngine views and the
+  // !mPartialRenderMode guards in flex-container.cpp / list.cpp let the stagger
+  // play. Restored after rendering completes (and on the !comp early return).
+  // The RAII guard restores the state on every exit from this function; the old
+  // code saved the values but never restored them, so the cleared state leaked
+  // into the parent's remaining render and already-visible reused children
+  // floated up a second time.
+  PartialRenderStateGuard partialStateGuard(mPartialRenderMode, mPartialRenderIds);
+  if(mPartialRenderMode && !mDiffEngine.HasView(id))
+  {
+    mPartialRenderMode = false;
+    mPartialRenderIds.clear();
+  }
+
   const ComponentModel* comp = components.GetComponent(id);
+
   if(!comp)
   {
     DALI_LOG_ERROR("[A2UI] Renderer: Component '%s' not found\n", id.c_str());
     // Shimmer loading animation as the placeholder
     View placeholder = ShimmerEffect::BuildOverlay();
     mDiffEngine.RegisterView(id, placeholder);
+    // Remember this cached view is only a shimmer placeholder, so the
+    // stagger-reveal treats the component's first REAL render as its first
+    // appearance (see HasRealView).
+    mShimmerIds.insert(id);
     return placeholder;
   }
 
@@ -232,6 +281,7 @@ View A2uiRenderer::RenderComponent(const std::string& id,
   {
     A11yBridge::Apply(result, *comp, ctx);
     mDiffEngine.RegisterView(id, result);
+    mShimmerIds.erase(id); // a real view replaced any shimmer placeholder
   }
 
   mCurrentRenderingId = prevRenderingId;
@@ -482,7 +532,7 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
   auto rendered = std::make_shared<int>(-1);
 
   auto build = [self, templateId, arrayPath, comps, scope, container, prepareItem,
-                own, rendered, onComplete]() mutable {
+                 own, rendered, onComplete]() mutable {
     DataModel&      model = scope.GetDataModel();
     const TreeNode* array = model.ResolvePath(arrayPath);
     int             count = (array && array->GetType() == TreeNode::ARRAY)
@@ -519,9 +569,35 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
     self->mWatchScope = saved;
     *rendered         = count;
 
-    // Fire onComplete after children have been built and added to the container.
-    if(onComplete) onComplete(container);
+    // Only fire the stagger-reveal animation ONCE — during the first full
+    // Render() where mPartialRenderMode is false. Subsequent rebuilds (array
+    // grew, data-watch fired, RerenderParent, etc.) must NOT re-trigger the
+    // animation on already-visible children.
+    //
+    // Key insight: staggerPlayed must be set to true whenever children are
+    // built (count > 0), NOT just when the animation plays. Otherwise, if
+    // the first build() skips the animation (because mPartialRenderMode is
+    // true during RerenderParent), staggerPlayed stays false — and the next
+    // data-watch callback (where mPartialRenderMode is false) would replay
+    // the stagger on ALL children, making them flash invisible and float up.
+    if(count > 0)
+    {
+      // Use the persistent mStaggerPlayedPaths set instead of a local
+      // shared_ptr<bool>. The local was recreated fresh on every
+      // BuildTemplateChildren call (which happens every time RerenderParent
+      // re-renders the parent), so the stagger animation replayed on ALL
+      // children every time. The member set persists across re-creations.
+      bool shouldPlayStagger = (self->mStaggerPlayedPaths.find(arrayPath) == self->mStaggerPlayedPaths.end())
+                               && onComplete && !self->mPartialRenderMode;
+      self->mStaggerPlayedPaths.insert(arrayPath);
+      if(shouldPlayStagger)
+      {
+        onComplete(container);
+      }
+    }
+
   };
+
 
   build(); // first paint — usually empty, the array arrives in a later updateDataModel
   // Recorded in the ENCLOSING generation: this container is one of its children.
@@ -646,6 +722,24 @@ void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float
 {
   if(!container) return;
 
+  const uint32_t childCount = container.GetChildViewCount();
+  if(childCount == 0) return;
+
+  std::vector<View> children;
+  children.reserve(childCount);
+  for(uint32_t i = 0; i < childCount; ++i)
+  {
+    children.push_back(container.GetChildViewAt(i));
+  }
+  StaggerRevealChildren(children, staggerSec, fadeSec, floatOffsetDp);
+}
+
+// V2: the vector overload carries the actual implementation so callers can
+// stagger an explicit subset of views (only the freshly-rendered children)
+// instead of every child of a container.
+void A2uiRenderer::StaggerRevealChildren(const std::vector<View>& views, float staggerSec,
+                                         float fadeSec, float floatOffsetDp)
+{
   // Prune finished animations so the vector doesn't grow unboundedly across
   // rebuilds. A STOPPED animation has either completed or never been played.
   mStaggerAnimations.erase(
@@ -653,8 +747,9 @@ void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float
       [](const Animation& a) { return !a || a.GetState() == Animation::STOPPED; }),
     mStaggerAnimations.end());
 
-  const uint32_t childCount = container.GetChildViewCount();
-  if(childCount == 0) return;
+  if(views.empty()) return;
+
+  ++mStaggerPlayedCount; // diagnostics — see GetStaggerPlayedCount()
 
   // The FlexLayout hasn't positioned the children yet at this point (we're
   // still inside the render pass), so POSITION_Y is 0 for every child.
@@ -665,8 +760,8 @@ void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float
   float offsetPx = Metrics::Dp(floatOffsetDp);
 
   // Capture the parameters for the deferred lambda.
-  View capturedContainer = container;
-  A2uiRenderer* self = this;
+  std::vector<View> captured = views;
+  A2uiRenderer*      self     = this;
 
   // Prune finished timers (one-shot timers that have already fired).
   mStaggerTimers.erase(
@@ -674,31 +769,28 @@ void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float
       [](const Dali::Timer& t) { return !t || !t.IsRunning(); }),
     mStaggerTimers.end());
 
-  // Set opacity to 0 immediately so children are invisible until the float plays.
-  for(uint32_t i = 0; i < childCount; ++i)
+  // Set opacity to 0 immediately so the views are invisible until the float plays.
+  for(View view : views) // View is a handle — cheap to copy
   {
-    View child = container.GetChildViewAt(i);
-    if(child) child.SetProperty(Actor::Property::OPACITY, 0.0f);
+    if(view) view.SetProperty(Actor::Property::OPACITY, 0.0f);
   }
 
   Dali::Timer timer = Dali::Timer::New(100);
   timer.TickSignal().Connect(this,
-    [capturedContainer, staggerSec, fadeSec, offsetPx, self]() -> bool {
-      if(!capturedContainer) return false;
+    [captured, staggerSec, fadeSec, offsetPx, self]() -> bool {
+      if(captured.empty()) return false;
 
-      const uint32_t count = capturedContainer.GetChildViewCount();
-      if(count == 0) return false;
-
-      float totalDuration = staggerSec * static_cast<float>(count - 1) + fadeSec;
+      float totalDuration =
+        staggerSec * static_cast<float>(captured.size() - 1) + fadeSec;
       if(totalDuration <= 0.0f) return false;
 
       Animation anim = Animation::New(totalDuration);
       anim.SetEndAction(Animation::BAKE);
       anim.SetDisconnectAction(Animation::BAKE);
 
-      for(uint32_t i = 0; i < count; ++i)
+      for(std::size_t i = 0; i < captured.size(); ++i)
       {
-        View child = capturedContainer.GetChildViewAt(i);
+        View child = captured[i];
         if(!child) continue;
 
         // Now the layout has run — read the REAL position.
@@ -722,6 +814,11 @@ void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float
   timer.Start();
   // Keep the timer alive — store it in a member so it isn't GC'd.
   mStaggerTimers.push_back(timer);
+}
+
+bool A2uiRenderer::HasRealView(const std::string& id) const
+{
+  return mDiffEngine.HasView(id) && mShimmerIds.find(id) == mShimmerIds.end();
 }
 
 // ========================================================================
@@ -780,6 +877,9 @@ void A2uiRenderer::InvalidateRenderState()
   mDiffEngine.Clear();
   mComponentWatchers.clear();
   mWatchScope.reset();
+  // A new surface re-renders everything from scratch — forget which component
+  // IDs were shimmer placeholders so their first real appearance animates.
+  mShimmerIds.clear();
 }
 
 View A2uiRenderer::RenderIncremental(SurfaceModel& surface)
@@ -911,8 +1011,24 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
   mPartialRenderMode = true;
   mPartialRenderIds.clear();
   mPartialRenderIds.insert(componentId);
-  // Also include any children that are in this update's modified set — they
-  // need fresh renders too. The component itself is always re-rendered.
+  // A modified DESCENDANT arriving in the same render pass (e.g. a section
+  // batched together with its parent) must also be re-rendered fresh —
+  // otherwise its stale shimmer placeholder is reused as the final view and
+  // the real content never renders. Insert every modified descendant, and
+  // retire its stale watchers — the render below re-registers fresh ones.
+  for(const std::string& modId : components.GetLastModifiedIds())
+  {
+    if(modId == componentId) continue;
+    for(std::string p = components.GetParentId(modId); !p.empty(); p = components.GetParentId(p))
+    {
+      if(p == componentId)
+      {
+        mPartialRenderIds.insert(modId);
+        RetireComponentWatchers(surface.GetDataModel(), modId);
+        break;
+      }
+    }
+  }
 
   // Render the new subtree
   View newView = RenderComponent(componentId, components, ctx);
@@ -956,10 +1072,13 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
     }
     // Leaf component: no parent re-render needed — the Add above is sufficient.
 
-    // Float-in the newly added component with an upward-floating animation.
-    // The view registered in the DiffEngine for componentId is the fresh one
-    // now on stage — fetch it and animate.
+    // Float-in the newly added component with an upward-floating animation,
+    // but only once: RerenderParent may re-create a parent (and all its
+    // children), causing already-visible components to appear "new" again.
+    // Without this guard they'd flash invisible and float up a second time.
+    if(mFloatedComponentIds.find(componentId) == mFloatedComponentIds.end())
     {
+      mFloatedComponentIds.insert(componentId);
       View freshView = mDiffEngine.GetView(componentId);
       if(freshView) FloatInView(freshView);
     }

@@ -316,6 +316,9 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
   }
 
   int index = 0;
+  // V2: children that make their FIRST real appearance in this pass — only
+  // these join the stagger reveal below.
+  std::vector<View> freshChildren;
   for(const auto& childId : comp.childIds)
   {
     // Partial render mode: if this child is NOT in the changed set, reuse its
@@ -373,7 +376,16 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
     {
       mTextWidthBudget = parentBudget;
     }
+    // Must be read BEFORE RenderComponent, which registers the view it
+    // creates. A shimmer placeholder does NOT count as a real view, so a
+    // forward-referenced component still gets its entrance animation when
+    // its real content first renders.
+    const bool hadRealView = HasRealView(childId);
     View child = RenderComponent(childId, components, ctx);
+    if(child && childComp && !hadRealView)
+    {
+      freshChildren.push_back(child);
+    }
     mImageThumbnailHint = false;
     mAvatarSmallHint = false;
 
@@ -579,9 +591,16 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
   // every Row/Column's children appear one by one (fade + float up) instead
   // of popping in all at once. Only fires when the static childIds path was
   // taken (index > 0).
-  if(index > 0)
+  //
+  // V2: stagger ONLY the children that made their first real appearance in
+  // this pass. Reused views (already visible) and shimmer placeholders are
+  // never animated, which structurally prevents replays on
+  // incremental/partial re-renders — no partial-mode or played-once guard is
+  // needed here. A full render of a fresh surface still floats everything,
+  // because nothing has a real view yet.
+  if(!freshChildren.empty())
   {
-    StaggerRevealChildren(flex);
+    StaggerRevealChildren(freshChildren);
   }
 
   mTextWidthBudget = savedBudget;
