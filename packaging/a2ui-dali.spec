@@ -89,6 +89,7 @@ cp packaging/%{name}.manifest %{name}.manifest
 %manifest %{name}.manifest
 %defattr(-,root,root,-)
 %license LICENSE
+%{_libdir}/liba2ui-dali.a
 %{_bindir}/a2ui-basic-renderer
 %{_bindir}/a2ui-gallery-demo
 %{_bindir}/a2ui-custom-component
@@ -98,6 +99,5 @@ cp packaging/%{name}.manifest %{name}.manifest
 
 %files devel
 %defattr(-,root,root,-)
-%{_libdir}/liba2ui-dali.a
 %{_libdir}/pkgconfig/a2ui-dali.pc
 %{_includedir}/a2ui-dali

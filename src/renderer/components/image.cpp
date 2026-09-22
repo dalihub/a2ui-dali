@@ -130,6 +130,11 @@ View A2uiRenderer::RenderImage(const ComponentModel& comp, DataContext& ctx)
     }
     ImageView img = ImageView::New(bannerPath.c_str());
     img.SetFittingMode(fitMode);
+
+    // Auto-register the ImageView for magic-reveal: the reveal animation
+    // will play automatically when the image finishes loading.
+    if(!isIcon) mRevealManager->Register(img);
+
     // Round the picture with an alpha mask (circle for avatars, rounded-rect for the rest). Force
     // MASKING_ON_RENDERING (GPU): the CPU/ON_LOADING path bakes the mask into the texture at load
     // and DISCARDS SetPixelArea, which is what blocked centre-cropping before. On the GPU path the

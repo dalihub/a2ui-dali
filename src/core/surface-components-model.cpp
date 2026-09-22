@@ -87,13 +87,55 @@ void SurfaceComponentsModel::AddComponents(const TreeNode& componentsArray)
       comp.childId = childNode->GetString();
     }
 
+    // Set needsParentRerender based on component type.
+    // Container types: their parent's render logic depends on child content/type/properties.
+    // Leaf types: they self-manage updates via WatchBinding, no parent re-render needed.
+    if(comp.type == "Button" || comp.type == "Card" || comp.type == "Row" ||
+       comp.type == "Column" || comp.type == "Tabs" || comp.type == "List" ||
+       comp.type == "Modal")
+    {
+      comp.needsParentRerender = true;
+    }
+
     // Track modified IDs
     mLastModifiedIds.push_back(comp.id);
+
+    // Maintain parent reverse index: each child's ID → this component's ID.
+    for(const auto& cid : comp.childIds)
+    {
+      mParentMap[cid] = comp.id;
+    }
+    if(!comp.childId.empty())
+    {
+      mParentMap[comp.childId] = comp.id;
+    }
+
+    // Also set needsParentRerender if the PARENT is a container type.
+    // A leaf component (e.g. Text) inside a Button needs the Button to re-render
+    // so SizeButtonToLabel runs; inside a Card so FindFirstActionInSubtree runs;
+    // inside a Row/Column so flex layout logic runs with the new child, etc.
+    // The parent map was just updated above, so look up the parent here.
+    auto parentIt = mParentMap.find(comp.id);
+    if(parentIt != mParentMap.end())
+    {
+      auto pCompIt = mComponents.find(parentIt->second);
+      if(pCompIt != mComponents.end())
+      {
+        const std::string& ptype = pCompIt->second.type;
+        if(ptype == "Button" || ptype == "Card" || ptype == "Row" ||
+           ptype == "Column" || ptype == "Tabs" || ptype == "List" ||
+           ptype == "Modal")
+        {
+          comp.needsParentRerender = true;
+        }
+      }
+    }
 
     // Upsert into map
     mComponents[comp.id] = std::move(comp);
   }
 }
+
 
 const ComponentModel* SurfaceComponentsModel::GetComponent(const std::string& id) const
 {
@@ -113,6 +155,37 @@ const ComponentModel* SurfaceComponentsModel::GetRoot() const
 void SurfaceComponentsModel::Clear()
 {
   mComponents.clear();
+  mParentMap.clear();
+}
+
+std::string SurfaceComponentsModel::GetParentId(const std::string& childId) const
+{
+  auto it = mParentMap.find(childId);
+  if(it != mParentMap.end())
+  {
+    return it->second;
+  }
+  return "";
+}
+
+int SurfaceComponentsModel::GetChildIndexInParent(const std::string& childId) const
+{
+  std::string parentId = GetParentId(childId);
+  if(parentId.empty()) return -1;
+
+  const ComponentModel* parent = GetComponent(parentId);
+  if(!parent) return -1;
+
+  for(int i = 0; i < static_cast<int>(parent->childIds.size()); ++i)
+  {
+    if(parent->childIds[i] == childId) return i;
+  }
+
+  // Single child (Card/Button childId)
+  if(parent->childId == childId) return 0;
+
+  return -1;
 }
 
 } // namespace A2ui
+

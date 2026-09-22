@@ -39,7 +39,10 @@ float SizeButtonToLabel(FlexLayout button, Label labelChild)
 
   // Only an actual single glyph / emoji / symbol gets the fixed square; short ASCII
   // words like "Yes"/"No"/"OK" must be sized as text or they clip to a stub ("—").
-  bool isGlyphButton = (byteLen <= 4 && (hasNonAscii || byteLen <= 1));
+  // An empty string (data-bound label not yet arrived) must NOT be treated as a
+  // glyph button — it would set a fixed square width, and the text would not be
+  // centred when the value arrives. Use the default minimum width instead.
+  bool isGlyphButton = (byteLen > 0 && byteLen <= 4 && (hasNonAscii || byteLen <= 1));
   float btnWidth;
   if(isGlyphButton)
   {
@@ -64,6 +67,63 @@ float SizeButtonToLabel(FlexLayout button, Label labelChild)
   return btnWidth;
 }
 } // namespace
+
+FlexAlign A2uiRenderer::ComputeButtonAlignSelf(const ComponentModel& comp,
+                                               const SurfaceComponentsModel& components) const
+{
+  // Default: centre the button (safe fallback, matches the previous hardcoded value).
+  FlexAlign align = FlexAlign::CENTER;
+
+  // Walk up to the parent component.
+  std::string parentId = components.GetParentId(comp.id);
+  if(parentId.empty())
+    return align;  // no parent (root-level) — keep CENTER
+
+  const ComponentModel* parent = components.GetComponent(parentId);
+  if(!parent)
+    return align;
+
+  // Only a Column's cross-axis alignment affects horizontal placement of a button.
+  // A Row's cross axis is VERTICAL (align-items controls top/centre/bottom, not left/right),
+  // so a Button inside a Row keeps CENTER (its left/right position is the Row's main axis).
+  if(parent->type != "Column")
+    return align;
+
+  if(!parent->rawNode)
+    return align;
+
+  const char* alignStr = GetNodeString(*parent->rawNode, "align", "stretch");
+
+  // Explicit align on the parent Column wins directly.
+  if(strcmp(alignStr, "center") == 0)
+    return FlexAlign::CENTER;
+  if(strcmp(alignStr, "end") == 0)
+    return FlexAlign::FLEX_END;
+  if(strcmp(alignStr, "start") == 0)
+    return FlexAlign::FLEX_START;
+
+  // Default align ("stretch" or undeclared): check whether this is a centred-style
+  // card. If any sibling Column has align:center or any sibling Row has justify:center,
+  // this is a centred card (auth dialog "Sign in") → the button should centre too.
+  // Otherwise it's a left-aligned content column (movie "Watch Trailer") → FLEX_START.
+  // This mirrors the columnCentredStyle detection in flex-container.cpp lines 148-165.
+  for(const auto& siblingId : parent->childIds)
+  {
+    if(siblingId == comp.id) continue;  // skip self
+    const ComponentModel* sib = components.GetComponent(siblingId);
+    if(!sib || !sib->rawNode) continue;
+
+    bool sibRow = (sib->type == "Row");
+    bool centredSib = sibRow
+      ? (strcmp(GetNodeString(*sib->rawNode, "justify", ""), "center") == 0)
+      : (strcmp(GetNodeString(*sib->rawNode, "align", ""), "center") == 0);
+    if(centredSib)
+      return FlexAlign::CENTER;  // centred-style card → button stays centred
+  }
+
+  // Left-aligned content column with no centred siblings → button at the start (left).
+  return FlexAlign::FLEX_START;
+}
 
 View A2uiRenderer::RenderButton(const ComponentModel& comp,
                                 const SurfaceComponentsModel& components,
@@ -92,10 +152,17 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
   button.SetMaximumHeight(kBtnHeight);  // pin the height so every button is uniform
   button.SetCornerRadius(kBtnHeight * 0.5f);  // OneUI CornerRadius 0.5 → pill
   button.SetPadding(Extents(kPadX, kPadX, kPadY, kPadY));
+
+  // Compute AlignSelf from the parent container instead of a hardcoded CENTER:
+  // flex-container.cpp's override only runs during a full parent render, so an
+  // incrementally-added button would otherwise stay centred in a left-aligned Column.
+  FlexAlign buttonAlignSelf = ComputeButtonAlignSelf(comp, components);
+
   // No self-margin: the container's gap handles spacing. (A self-margin was overwritten
   // on the 2nd+ row child by the gap logic, making buttons in a Row look uneven.)
   // Don't let the parent Column's align:stretch override our fixed size.
-  button.SetLayoutParams(FlexLayoutParams::New().SetAlignSelf(FlexAlign::CENTER));
+  button.SetLayoutParams(FlexLayoutParams::New().SetAlignSelf(buttonAlignSelf));
+  button.SetFocusable(true);
 
   // White outlined pill: white fill, light outline, near-black label. borderless = text-only.
   UiColor bgColor = COLOR_CARD_BG;       // white surface
@@ -114,60 +181,70 @@ View A2uiRenderer::RenderButton(const ComponentModel& comp,
   }
 
   float btnWidth = kBtnMinWidth;
+
   if(!comp.childId.empty())
   {
-    View childView = RenderComponent(comp.childId, components, ctx);
-    Label labelChild = Label::DownCast(childView);
-    if(labelChild)
+    // Only render the child if its component definition has already arrived.
+    // If the child is not yet defined, render an empty button (no shimmer placeholder)
+    // — the real child will be spliced in by a subsequent incremental update.
+    const ComponentModel* childComp = components.GetComponent(comp.childId);
+    if(childComp)
     {
-      labelChild.SetTextColor(fgColor);
-      labelChild.SetFontWeight(Text::FontWeight::SEMI_BOLD);  // web button labels read semibold (5-agent consensus)
-      labelChild.SetFontSize(Metrics::FontButton());
-      labelChild.SetHorizontalTextAlignment(Text::Alignment::CENTER);
-      // Grow the label box to fit the full glyph run so text like "Submit
-      // Reservation" isn't ellipsized. Button width tracks the label so the
-      // padding is uniform on both sides regardless of text length.
-      labelChild.SetMultiLine(false);
-      labelChild.SetRequestedHeight(Metrics::Dp(20));
-      btnWidth = SizeButtonToLabel(button, labelChild);
+      View childView = RenderComponent(comp.childId, components, ctx);
+      Label labelChild = Label::DownCast(childView);
+      if(labelChild)
+      {
+        labelChild.SetTextColor(fgColor);
+        labelChild.SetFontWeight(Text::FontWeight::SEMI_BOLD);  // web button labels read semibold (5-agent consensus)
+        labelChild.SetFontSize(Metrics::FontButton());
+        labelChild.SetHorizontalTextAlignment(Text::Alignment::CENTER);
+        // Grow the label box to fit the full glyph run so text like "Submit
+        // Reservation" isn't ellipsized. Button width tracks the label so the
+        // padding is uniform on both sides regardless of text length.
+        labelChild.SetMultiLine(false);
+        labelChild.SetRequestedHeight(Metrics::Dp(20));
+        btnWidth = SizeButtonToLabel(button, labelChild);
 
-      // The width just measured is the width of the label AS IT IS RIGHT NOW, and a bound
-      // label is empty at this point — its value arrives in a later updateDataModel. Re-measure
-      // when it does, the same way text.cpp re-fits a streamed label's height.
-      //
-      // The watch is registered AFTER the child render above, so the label's own watch sits
-      // ahead of this one in the data model's observer list and has already written the new
-      // text by the time we read it back. WatchBinding is a no-op for a literal label.
-      const ComponentModel* childComp = components.GetComponent(comp.childId);
-      if(childComp && childComp->rawNode)
-      {
-        WatchBinding(childComp->rawNode->Find("text"), ctx,
-                     [button, labelChild](const std::string&) mutable {
-                       SizeButtonToLabel(button, labelChild);
-                     });
+        // The width just measured is the width of the label AS IT IS RIGHT NOW, and a bound
+        // label is empty at this point — its value arrives in a later updateDataModel. Re-measure
+        // when it does, the same way text.cpp re-fits a streamed label's height.
+        //
+        // The watch is registered AFTER the child render above, so the label's own watch sits
+        // ahead of this one in the data model's observer list and has already written the new
+        // text by the time we read it back. WatchBinding is a no-op for a literal label.
+        if(childComp && childComp->rawNode)
+        {
+          WatchBinding(childComp->rawNode->Find("text"), ctx,
+                       [button, labelChild](const std::string&) mutable {
+                         SizeButtonToLabel(button, labelChild);
+                       });
+        }
       }
-    }
-    else
-    {
-      // Icon-only button (e.g. a music-player prev/play/next transport control): the web
-      // draws these as a COMPACT borderless circular tap target, not a 140dp outlined pill.
-      btnWidth = kBtnHeight;
-      button.SetBackgroundColor(UiColor(0.0f, 0.0f, 0.0f, 0.0f));
-      button.SetBorderlineWidth(0.0f);
-      // The icon is an ACTION control, not an inline decorative glyph — override the icon's
-      // muted default to the button's dark foreground and enlarge it (the web transport
-      // glyphs are ~24px dark, not a faint 18px grey mark). Without this the prev/play/next
-      // controls render as barely-visible specks.
-      ImageView iconChild = ImageView::DownCast(childView);
-      if(iconChild)
+      else
       {
-        iconChild.SetImageColor(fgColor);
-        iconChild.SetRequestedWidth(Metrics::Dp(24));
-        iconChild.SetRequestedHeight(Metrics::Dp(24));
+        // Icon-only button (e.g. a music-player prev/play/next transport control): the web
+        // draws these as a COMPACT borderless circular tap target, not a 140dp outlined pill.
+        ImageView iconChild = ImageView::DownCast(childView);
+        if(iconChild)
+        {
+          btnWidth = kBtnHeight;
+          button.SetBackgroundColor(UiColor(0.0f, 0.0f, 0.0f, 0.0f));
+          button.SetBorderlineWidth(0.0f);
+          // The icon is an ACTION control, not an inline decorative glyph — override the icon's
+          // muted default to the button's dark foreground and enlarge it (the web transport
+          // glyphs are ~24px dark, not a faint 18px grey mark). Without this the prev/play/next
+          // controls render as barely-visible specks.
+          iconChild.SetImageColor(fgColor);
+          iconChild.SetRequestedWidth(Metrics::Dp(24));
+          iconChild.SetRequestedHeight(Metrics::Dp(24));
+        }
       }
+
+      button.Add(childView);
     }
-    button.Add(childView);
+    // else: child not yet defined → render empty button with default style
   }
+
   button.SetRequestedWidth(btnWidth);
 
   // Action handling

@@ -18,9 +18,14 @@
 #include "a2ui-theme.h"
 #include "a2ui-metrics.h"
 #include "render-style.h"
+#include "util/shimmer-effect.h"
 #include <dali/integration-api/debug.h>
 #include <dali/public-api/events/key-event.h>
 #include <dali/public-api/events/touch-event.h>
+#include <dali/public-api/animation/animation.h>
+#include <dali/public-api/animation/time-period.h>
+#include <dali/public-api/animation/alpha-function.h>
+
 #include <dali-ui-foundation/public-api/views/image/image-view.h>
 #include <dali-ui-foundation/public-api/layouts/flex-layout-params.h>
 #include <dali-ui-foundation/public-api/views/scroll/scroll-view.h>
@@ -61,10 +66,38 @@ bool IsActivationKey(const std::string& keyName)
          keyName == "Select" || keyName == "Enter";
 }
 
+// RAII guard for mPartialRenderMode / mPartialRenderIds. PART12 clears them
+// so a never-before-rendered subtree renders fresh (and its own containers
+// may stagger), but the previous code only saved the old values into dead
+// variables — the cleared state leaked into the rest of the PARENT's render,
+// so the parent's `index > 0 && !mPartialRenderMode` check passed and
+// StaggerRevealChildren replayed on children that were only being REUSED
+// (already visible — the movie_detail block floated up a second time when
+// recommendations_section arrived). Restoring on scope exit confines the
+// fresh render to the new subtree. Also exception-safe.
+struct PartialRenderStateGuard
+{
+  bool&                           mode;
+  std::unordered_set<std::string>& ids;
+  bool                            savedMode;
+  std::unordered_set<std::string> savedIds;
+
+  PartialRenderStateGuard(bool& m, std::unordered_set<std::string>& i)
+  : mode(m), ids(i), savedMode(m), savedIds(i)
+  {
+  }
+  ~PartialRenderStateGuard()
+  {
+    mode = savedMode;
+    ids  = savedIds;
+  }
+};
+
 } // anonymous namespace
 
 A2uiRenderer::A2uiRenderer()
 {
+  mRevealManager = std::make_unique<MagicRevealManager>();
   RegisterStandardCatalog();
 }
 
@@ -113,6 +146,7 @@ void A2uiRenderer::RegisterStandardCatalog()
   mRegistry.Register("Modal",         [this](const ComponentModel& c, RenderContext& rc) { return RenderModal(c, rc.components, rc.data); });
   mRegistry.Register("List",          [this](const ComponentModel& c, RenderContext& rc) { return RenderList(c, rc.components, rc.data); });
   mRegistry.Register("Icon",          [this](const ComponentModel& c, RenderContext& rc) { return RenderIcon(c, rc.data); });
+  mRegistry.Register("View",          [this](const ComponentModel& c, RenderContext& rc) { return RenderView(c, rc.data); });
 }
 
 // ========================================================================
@@ -172,18 +206,56 @@ View A2uiRenderer::RenderComponent(const std::string& id,
                                    const SurfaceComponentsModel& components,
                                    DataContext& ctx)
 {
+  // Partial render mode: if this component ID is NOT in the partial render set,
+  // reuse the existing View from the DiffEngine instead of re-rendering it.
+  // This lets a parent re-render run its layout logic while only re-rendering
+  // the specific child that changed — siblings keep their existing Views.
+  if(mPartialRenderMode && mPartialRenderIds.find(id) == mPartialRenderIds.end())
+  {
+    if(mDiffEngine.HasView(id))
+    {
+      return mDiffEngine.GetView(id);
+    }
+    // Not in DiffEngine either — fall through to normal render (new component)
+  }
+
+  // When a fresh component (not yet in DiffEngine) is rendered under partial
+  // render mode, its ENTIRE subtree is new — children should render fresh and
+  // get their stagger animations. Temporarily clear mPartialRenderMode so the
+  // subtree's RenderComponent calls don't reuse stale DiffEngine views and the
+  // !mPartialRenderMode guards in flex-container.cpp / list.cpp let the stagger
+  // play. Restored after rendering completes (and on the !comp early return).
+  // The RAII guard restores the state on every exit from this function; the old
+  // code saved the values but never restored them, so the cleared state leaked
+  // into the parent's remaining render and already-visible reused children
+  // floated up a second time.
+  PartialRenderStateGuard partialStateGuard(mPartialRenderMode, mPartialRenderIds);
+  if(mPartialRenderMode && !mDiffEngine.HasView(id))
+  {
+    mPartialRenderMode = false;
+    mPartialRenderIds.clear();
+  }
+
   const ComponentModel* comp = components.GetComponent(id);
+
   if(!comp)
   {
     DALI_LOG_ERROR("[A2UI] Renderer: Component '%s' not found\n", id.c_str());
-    // dali-ui 2.5.26 dropped the fluent-chaining setters (they now return void),
-    // so configure the placeholder view via individual statements.
-    View placeholder = View::New();
-    placeholder.SetBackgroundColor(UiColor(0xFF0000));
-    placeholder.SetRequestedWidth(MATCH_PARENT);
-    placeholder.SetRequestedHeight(20.0f);
+    // Shimmer loading animation as the placeholder
+    View placeholder = ShimmerEffect::BuildOverlay();
+    mDiffEngine.RegisterView(id, placeholder);
+    // Remember this cached view is only a shimmer placeholder, so the
+    // stagger-reveal treats the component's first REAL render as its first
+    // appearance (see HasRealView).
+    mShimmerIds.insert(id);
     return placeholder;
   }
+
+
+  // Track which component is being rendered so RecordWatch can associate
+  // watchers with this component for later incremental retirement.
+  std::string prevRenderingId = mCurrentRenderingId;
+  mCurrentRenderingId = id;
 
   const std::string& type = comp->type;
   // Dispatch through the component registry (the catalog, in code). Unknown types fall
@@ -209,10 +281,14 @@ View A2uiRenderer::RenderComponent(const std::string& id,
   {
     A11yBridge::Apply(result, *comp, ctx);
     mDiffEngine.RegisterView(id, result);
+    mShimmerIds.erase(id); // a real view replaced any shimmer placeholder
   }
+
+  mCurrentRenderingId = prevRenderingId;
 
   return result;
 }
+
 
 // ========================================================================
 // Placeholder
@@ -439,7 +515,8 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
                                          const std::string& arrayPath,
                                          const SurfaceComponentsModel& components,
                                          DataContext& ctx, View container,
-                                         std::function<void(View, int)> prepareItem)
+                                         std::function<void(View, int)> prepareItem,
+                                         std::function<void(View)> onComplete)
 {
   // Captured by value / by pointer: the callback outlives this call. The components model
   // and the DataModel both live in the SurfaceModel, and replacing either one goes through
@@ -455,7 +532,7 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
   auto rendered = std::make_shared<int>(-1);
 
   auto build = [self, templateId, arrayPath, comps, scope, container, prepareItem,
-                own, rendered]() mutable {
+                 own, rendered, onComplete]() mutable {
     DataModel&      model = scope.GetDataModel();
     const TreeNode* array = model.ResolvePath(arrayPath);
     int             count = (array && array->GetType() == TreeNode::ARRAY)
@@ -491,7 +568,36 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
     }
     self->mWatchScope = saved;
     *rendered         = count;
+
+    // Only fire the stagger-reveal animation ONCE — during the first full
+    // Render() where mPartialRenderMode is false. Subsequent rebuilds (array
+    // grew, data-watch fired, RerenderParent, etc.) must NOT re-trigger the
+    // animation on already-visible children.
+    //
+    // Key insight: staggerPlayed must be set to true whenever children are
+    // built (count > 0), NOT just when the animation plays. Otherwise, if
+    // the first build() skips the animation (because mPartialRenderMode is
+    // true during RerenderParent), staggerPlayed stays false — and the next
+    // data-watch callback (where mPartialRenderMode is false) would replay
+    // the stagger on ALL children, making them flash invisible and float up.
+    if(count > 0)
+    {
+      // Use the persistent mStaggerPlayedPaths set instead of a local
+      // shared_ptr<bool>. The local was recreated fresh on every
+      // BuildTemplateChildren call (which happens every time RerenderParent
+      // re-renders the parent), so the stagger animation replayed on ALL
+      // children every time. The member set persists across re-creations.
+      bool shouldPlayStagger = (self->mStaggerPlayedPaths.find(arrayPath) == self->mStaggerPlayedPaths.end())
+                               && onComplete && !self->mPartialRenderMode;
+      self->mStaggerPlayedPaths.insert(arrayPath);
+      if(shouldPlayStagger)
+      {
+        onComplete(container);
+      }
+    }
+
   };
+
 
   build(); // first paint — usually empty, the array arrives in a later updateDataModel
   // Recorded in the ENCLOSING generation: this container is one of its children.
@@ -523,7 +629,14 @@ void A2uiRenderer::RecordWatch(DataModel& model, const std::string& path,
   {
     s->ids.push_back(id);
   }
+  // Associate this watcher with the component currently being rendered so
+  // an incremental replacement can retire exactly its watchers.
+  if(!mCurrentRenderingId.empty())
+  {
+    mComponentWatchers[mCurrentRenderingId].push_back(id);
+  }
 }
+
 
 bool A2uiRenderer::WatchBinding(const TreeNode* propNode, DataContext& ctx,
                                 std::function<void(const std::string&)> apply) const
@@ -601,4 +714,582 @@ UiColor A2uiRenderer::ParseHexColor(const char* hex)
   return UiColor(val);
 }
 
+// ========================================================================
+// Stagger reveal — fade-in children one by one instead of all at once
+// ========================================================================
+void A2uiRenderer::StaggerRevealChildren(View container, float staggerSec, float fadeSec,
+                                         float floatOffsetDp)
+{
+  if(!container) return;
+
+  const uint32_t childCount = container.GetChildViewCount();
+  if(childCount == 0) return;
+
+  std::vector<View> children;
+  children.reserve(childCount);
+  for(uint32_t i = 0; i < childCount; ++i)
+  {
+    children.push_back(container.GetChildViewAt(i));
+  }
+  StaggerRevealChildren(children, staggerSec, fadeSec, floatOffsetDp);
+}
+
+// V2: the vector overload carries the actual implementation so callers can
+// stagger an explicit subset of views (only the freshly-rendered children)
+// instead of every child of a container.
+void A2uiRenderer::StaggerRevealChildren(const std::vector<View>& views, float staggerSec,
+                                         float fadeSec, float floatOffsetDp)
+{
+  // Prune finished animations so the vector doesn't grow unboundedly across
+  // rebuilds. A STOPPED animation has either completed or never been played.
+  mStaggerAnimations.erase(
+    std::remove_if(mStaggerAnimations.begin(), mStaggerAnimations.end(),
+      [](const Animation& a) { return !a || a.GetState() == Animation::STOPPED; }),
+    mStaggerAnimations.end());
+
+  if(views.empty()) return;
+
+  ++mStaggerPlayedCount; // diagnostics — see GetStaggerPlayedCount()
+
+  // The FlexLayout hasn't positioned the children yet at this point (we're
+  // still inside the render pass), so POSITION_Y is 0 for every child.
+  // Reading it now, shifting by the offset, and animating back to 0 would
+  // BAKE 0 — overriding the layout's real positions and collapsing all
+  // children to the same spot. Defer the position read + animation to a
+  // short timer so the layout has run and real positions are available.
+  float offsetPx = Metrics::Dp(floatOffsetDp);
+
+  // Capture the parameters for the deferred lambda.
+  std::vector<View> captured = views;
+  A2uiRenderer*      self     = this;
+
+  // Prune finished timers (one-shot timers that have already fired).
+  mStaggerTimers.erase(
+    std::remove_if(mStaggerTimers.begin(), mStaggerTimers.end(),
+      [](const Dali::Timer& t) { return !t || !t.IsRunning(); }),
+    mStaggerTimers.end());
+
+  // Set opacity to 0 immediately so the views are invisible until the float plays.
+  for(View view : views) // View is a handle — cheap to copy
+  {
+    if(view) view.SetProperty(Actor::Property::OPACITY, 0.0f);
+  }
+
+  Dali::Timer timer = Dali::Timer::New(100);
+  timer.TickSignal().Connect(this,
+    [captured, staggerSec, fadeSec, offsetPx, self]() -> bool {
+      if(captured.empty()) return false;
+
+      float totalDuration =
+        staggerSec * static_cast<float>(captured.size() - 1) + fadeSec;
+      if(totalDuration <= 0.0f) return false;
+
+      Animation anim = Animation::New(totalDuration);
+      anim.SetEndAction(Animation::BAKE);
+      anim.SetDisconnectAction(Animation::BAKE);
+
+      for(std::size_t i = 0; i < captured.size(); ++i)
+      {
+        View child = captured[i];
+        if(!child) continue;
+
+        // Now the layout has run — read the REAL position.
+        float currentY = child.GetProperty<float>(Actor::Property::POSITION_Y);
+        // Shift down so the child floats UP into place.
+        child.SetProperty(Actor::Property::POSITION_Y, currentY + offsetPx);
+
+        float delay = staggerSec * static_cast<float>(i);
+        anim.AnimateTo(Property(child, Actor::Property::OPACITY), 1.0f,
+                       AlphaFunction::EASE_OUT,
+                       TimePeriod(delay, fadeSec));
+        anim.AnimateTo(Property(child, Actor::Property::POSITION_Y), currentY,
+                       AlphaFunction::EASE_OUT,
+                       TimePeriod(delay, fadeSec));
+      }
+
+      anim.Play();
+      self->mStaggerAnimations.push_back(anim);
+      return false; // one-shot
+    });
+  timer.Start();
+  // Keep the timer alive — store it in a member so it isn't GC'd.
+  mStaggerTimers.push_back(timer);
+}
+
+bool A2uiRenderer::HasRealView(const std::string& id) const
+{
+  return mDiffEngine.HasView(id) && mShimmerIds.find(id) == mShimmerIds.end();
+}
+
+// ========================================================================
+// FloatInView — single-view upward float-in for incrementally-added components
+// ========================================================================
+void A2uiRenderer::FloatInView(View view, float fadeSec, float floatOffsetDp)
+{
+  if(!view || fadeSec <= 0.0f) return;
+
+  // Prune finished animations.
+  mFloatAnimations.erase(
+    std::remove_if(mFloatAnimations.begin(), mFloatAnimations.end(),
+      [](const Animation& a) { return !a || a.GetState() == Animation::STOPPED; }),
+    mFloatAnimations.end());
+
+  // Same layout-timing issue as StaggerRevealChildren: POSITION_Y is 0 right
+  // after RerenderParent because the FlexLayout hasn't run yet. Defer the
+  // position read + animation to a short timer.
+  float offsetPx = Metrics::Dp(floatOffsetDp);
+  View capturedView = view;
+  A2uiRenderer* self = this;
+
+  // Set opacity to 0 immediately so the view is invisible until the float plays.
+  view.SetProperty(Actor::Property::OPACITY, 0.0f);
+
+  Dali::Timer timer = Dali::Timer::New(100);
+  timer.TickSignal().Connect(this,
+    [capturedView, fadeSec, offsetPx, self]() mutable -> bool {
+      if(!capturedView) return false;
+
+      float currentY = capturedView.GetProperty<float>(Actor::Property::POSITION_Y);
+      capturedView.SetProperty(Actor::Property::POSITION_Y, currentY + offsetPx);
+
+      Animation anim = Animation::New(fadeSec);
+      anim.SetEndAction(Animation::BAKE);
+      anim.SetDisconnectAction(Animation::BAKE);
+      anim.AnimateTo(Property(capturedView, Actor::Property::OPACITY), 1.0f,
+                     AlphaFunction::EASE_OUT);
+      anim.AnimateTo(Property(capturedView, Actor::Property::POSITION_Y), currentY,
+                     AlphaFunction::EASE_OUT);
+      anim.Play();
+      self->mFloatAnimations.push_back(anim);
+      return false; // one-shot
+    });
+  timer.Start();
+  mFloatTimers.push_back(timer);
+}
+
+
+// ========================================================================
+// Incremental rendering (AI-generated)
+// ========================================================================
+
+void A2uiRenderer::InvalidateRenderState()
+{
+  mDiffEngine.Clear();
+  mComponentWatchers.clear();
+  mWatchScope.reset();
+  // A new surface re-renders everything from scratch — forget which component
+  // IDs were shimmer placeholders so their first real appearance animates.
+  mShimmerIds.clear();
+}
+
+View A2uiRenderer::RenderIncremental(SurfaceModel& surface)
+{
+  // No previous render → full render
+  if(!IsRendered())
+  {
+    std::printf("[A2UI] *** Full render ***\n");
+    return Render(surface);
+  }
+
+  const SurfaceComponentsModel& components = surface.GetComponentsModel();
+  const auto& changedIds = components.GetLastModifiedIds();
+
+  // Root itself changed → full re-render
+  for(const auto& id : changedIds)
+  {
+    if(id == "root")
+    {
+      std::printf("[A2UI] *** Full render ***\n");
+      return Render(surface);
+    }
+  }
+  std::printf("[A2UI] *** RenderIncremental ***\n");
+  // Configure action dispatcher (same as full Render)
+  mActionDispatcher.SetSurfaceId(surface.GetSurfaceId());
+  mActionDispatcher.SetSendDataModel(surface.GetSendDataModel());
+
+  DataContext ctx(surface.GetDataModel());
+  mCurrentComponents = &components;
+  mCurrentCtx = &ctx;
+
+  try
+  {
+    ApplyIncrementalUpdates(surface, changedIds, ctx);
+  }
+  catch(const std::exception& e)
+  {
+    DALI_LOG_ERROR("[A2UI] *** RenderIncremental() EXCEPTION: %s ***\n", e.what());
+    mCurrentComponents = nullptr;
+    mCurrentCtx = nullptr;
+    throw;
+  }
+
+  mCurrentComponents = nullptr;
+  mCurrentCtx = nullptr;
+
+  // Return the current root view (unchanged object — caller need not re-mount)
+  return mDiffEngine.GetView("root");
+}
+
+void A2uiRenderer::ApplyIncrementalUpdates(SurfaceModel& surface,
+                                            const std::vector<std::string>& changedIds,
+                                            DataContext& ctx)
+{
+  const SurfaceComponentsModel& components = surface.GetComponentsModel();
+
+  // Filter to top-level changes: if an ancestor of a changed component is also
+  // changed, the ancestor's rebuild will cover the descendant.
+  std::vector<std::string> topLevel = FilterTopLevelChanged(changedIds, components);
+
+  // Track which IDs already existed before this update (for Add vs Replace decision)
+  // An ID is "new" if the DiffEngine has no view for it yet.
+  for(const std::string& id : topLevel)
+  {
+    bool isNew = !mDiffEngine.HasView(id);
+    UpdateOneComponent(surface, id, ctx, isNew);
+  }
+
+  // Update snapshot so next diff is relative to the current state
+  mDiffEngine.TakeSnapshot(components);
+}
+
+void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& componentId,
+                                      DataContext& ctx, bool isNew)
+{
+  const SurfaceComponentsModel& components = surface.GetComponentsModel();
+  const ComponentModel* comp = components.GetComponent(componentId);
+  if(!comp)
+  {
+    DALI_LOG_ERROR("[A2UI] Incremental: component '%s' not found\n", componentId.c_str());
+    return;
+  }
+
+  // If this component needs its parent to be re-rendered, skip the initial
+  // render+splice — go directly to RerenderParent, which re-renders the parent
+  // (and only this child via partial render mode). This avoids redundant work:
+  // the initial render would be thrown away when RerenderParent creates a new
+  // parent view that includes a fresh copy of this child.
+  //
+  // EXCEPTION: if the parent is "root", RerenderParent skips it (root has no
+  // grandparent to splice into). Fall through to the normal in-place replace
+  // path instead — the leaf component's own WatchBinding handles its content
+  // update, and root's layout is already correct.
+  if(comp->needsParentRerender)
+  {
+    std::string parentId = components.GetParentId(componentId);
+    if(parentId.empty())
+    {
+      DALI_LOG_ERROR("[A2UI] Incremental: component '%s' has no parent for re-render\n", componentId.c_str());
+      return;
+    }
+    if(parentId != "root")
+    {
+      // Retire watchers for this component before the parent re-renders it.
+      RetireComponentWatchers(surface.GetDataModel(), componentId);
+      RerenderParent(surface, parentId, ctx, componentId);
+      return;
+    }
+    // Parent is root — fall through to normal in-place replace path.
+  }
+
+  // Capture the old view BEFORE RenderComponent — RenderComponent calls
+  // RegisterView() internally, which would overwrite the old mapping.
+  View oldView = isNew ? View() : mDiffEngine.GetView(componentId);
+
+  // Retire old watchers registered by this component (and its descendants).
+  // RenderComponent will re-register fresh ones for the new subtree.
+  RetireComponentWatchers(surface.GetDataModel(), componentId);
+
+  // For a container component being replaced in-place, set partial render mode
+  // so that children NOT in the changed set reuse their existing Views from
+  // the DiffEngine instead of being re-rendered from scratch. Only this
+  // component (and its newly-arrived children) should be rendered fresh.
+  // This is the same optimization RerenderParent uses, applied to the
+  // in-place replace path (e.g. when the parent is root).
+  bool wasPartialRender = mPartialRenderMode;
+  auto savedPartialIds = mPartialRenderIds;
+  mPartialRenderMode = true;
+  mPartialRenderIds.clear();
+  mPartialRenderIds.insert(componentId);
+  // A modified DESCENDANT arriving in the same render pass (e.g. a section
+  // batched together with its parent) must also be re-rendered fresh —
+  // otherwise its stale shimmer placeholder is reused as the final view and
+  // the real content never renders. Insert every modified descendant, and
+  // retire its stale watchers — the render below re-registers fresh ones.
+  for(const std::string& modId : components.GetLastModifiedIds())
+  {
+    if(modId == componentId) continue;
+    for(std::string p = components.GetParentId(modId); !p.empty(); p = components.GetParentId(p))
+    {
+      if(p == componentId)
+      {
+        mPartialRenderIds.insert(modId);
+        RetireComponentWatchers(surface.GetDataModel(), modId);
+        break;
+      }
+    }
+  }
+
+  // Render the new subtree
+  View newView = RenderComponent(componentId, components, ctx);
+
+  // Restore previous partial render state.
+  mPartialRenderMode = wasPartialRender;
+  mPartialRenderIds = savedPartialIds;
+  if(!newView)
+  {
+    DALI_LOG_ERROR("[A2UI] Incremental: RenderComponent returned null for '%s'\n", componentId.c_str());
+    return;
+  }
+
+  if(isNew)
+  {
+    // New component: find its parent and Add it at the right position
+    std::string parentId = components.GetParentId(componentId);
+    if(parentId.empty())
+    {
+      // No parent found — can't splice a new root-level component
+      DALI_LOG_ERROR("[A2UI] Incremental: new component '%s' has no parent\n", componentId.c_str());
+      return;
+    }
+
+    View parentView = mDiffEngine.GetView(parentId);
+    if(!parentView)
+    {
+      DALI_LOG_ERROR("[A2UI] Incremental: parent view '%s' not found\n", parentId.c_str());
+      return;
+    }
+
+    int index = components.GetChildIndexInParent(componentId);
+    if(index >= 0 && static_cast<uint32_t>(index) < parentView.GetChildViewCount())
+    {
+      parentView.Add(newView);
+    }
+    else
+    {
+      // Append at end (common case for template children growth)
+      parentView.Add(newView);
+    }
+    // Leaf component: no parent re-render needed — the Add above is sufficient.
+
+    // Float-in the newly added component with an upward-floating animation,
+    // but only once: RerenderParent may re-create a parent (and all its
+    // children), causing already-visible components to appear "new" again.
+    // Without this guard they'd flash invisible and float up a second time.
+    if(mFloatedComponentIds.find(componentId) == mFloatedComponentIds.end())
+    {
+      mFloatedComponentIds.insert(componentId);
+      View freshView = mDiffEngine.GetView(componentId);
+      if(freshView) FloatInView(freshView);
+    }
+  }
+  else
+  {
+    // Existing component: replace the old view in-place
+    if(!oldView)
+    {
+      DALI_LOG_ERROR("[A2UI] Incremental: old view for '%s' not in DiffEngine\n", componentId.c_str());
+      return;
+    }
+
+    // Copy layout params so the replacement keeps its slot
+    CopyLayoutParams(oldView, newView);
+
+    // Find the parent container and replace
+    std::string parentId = components.GetParentId(componentId);
+    if(parentId.empty())
+    {
+      // This is root or an orphaned component — can't splice
+      DALI_LOG_ERROR("[A2UI] Incremental: component '%s' has no parent for replace\n", componentId.c_str());
+      return;
+    }
+
+    View parentView = mDiffEngine.GetView(parentId);
+    if(!parentView)
+    {
+      DALI_LOG_ERROR("[A2UI] Incremental: parent view '%s' not found for replace\n", parentId.c_str());
+      return;
+    }
+
+    // Find the old view's position in parent and replace it
+    uint32_t childCount = parentView.GetChildViewCount();
+    for(uint32_t i = 0; i < childCount; ++i)
+    {
+      if(parentView.GetChildViewAt(i) == oldView)
+      {
+        // Remove old, insert new at same position.
+        // dali-ui doesn't have a Replace method, so Remove + re-Add children.
+        // Collect children after the removed position
+        std::vector<View> after;
+        for(uint32_t j = i + 1; j < childCount; ++j)
+        {
+          after.push_back(parentView.GetChildViewAt(j));
+        }
+        // Remove old view and all after it
+        parentView.Remove(oldView);
+        for(const auto& v : after)
+        {
+          parentView.Remove(v);
+        }
+        // Add new view at position i
+        parentView.Add(newView);
+        // Re-Add the rest
+        for(const auto& v : after)
+        {
+          parentView.Add(v);
+        }
+        break;
+      }
+    }
+    // Leaf component: no parent re-render needed — the replace above is sufficient.
+  }
+}
+
+void A2uiRenderer::RerenderParent(SurfaceModel& surface, const std::string& parentId,
+                                  DataContext& ctx, const std::string& changedChildId)
+{
+  const SurfaceComponentsModel& components = surface.GetComponentsModel();
+  const ComponentModel* parentComp = components.GetComponent(parentId);
+  if(!parentComp) return;
+
+  // The root container has no grandparent to splice into, and the host's render
+  // callback keys off the DiffEngine's root view object identity. Re-rendering
+  // root here would create a new root view in the DiffEngine (breaking identity)
+  // without actually placing it on stage. Skip — root-level layout is already
+  // correct because root is re-rendered as a whole on any root component change.
+  if(parentId == "root") return;
+
+  View parentOldView = mDiffEngine.GetView(parentId);
+  if(!parentOldView) return;
+
+  // Retire watchers for the parent AND all its descendants (the re-render
+  // rebuilds the whole subtree).
+  RetireComponentWatchers(surface.GetDataModel(), parentId);
+  for(const auto& cid : parentComp->childIds)
+  {
+    RetireComponentWatchers(surface.GetDataModel(), cid);
+  }
+  if(!parentComp->childId.empty())
+  {
+    RetireComponentWatchers(surface.GetDataModel(), parentComp->childId);
+  }
+
+  // Partial render mode: when changedChildId is specified, only the parent and
+  // that child are re-rendered. Other children reuse their existing Views from
+  // the DiffEngine (RenderComponent checks mPartialRenderMode and returns the
+  // cached View for IDs not in mPartialRenderIds).
+  if(!changedChildId.empty())
+  {
+    mPartialRenderMode = true;
+    mPartialRenderIds.clear();
+    mPartialRenderIds.insert(parentId);
+    mPartialRenderIds.insert(changedChildId);
+  }
+
+  View parentNewView = RenderComponent(parentId, components, ctx);
+
+  // Always clear partial render mode after the parent render completes.
+  mPartialRenderMode = false;
+  mPartialRenderIds.clear();
+
+  if(!parentNewView) return;
+
+  CopyLayoutParams(parentOldView, parentNewView);
+
+  // Splice the new parent view into the grandparent, replacing the old one.
+  std::string grandParentId = components.GetParentId(parentId);
+  if(grandParentId.empty()) return;
+
+  View grandParentView = mDiffEngine.GetView(grandParentId);
+  if(!grandParentView) return;
+
+  uint32_t gc = grandParentView.GetChildViewCount();
+  for(uint32_t i = 0; i < gc; ++i)
+  {
+    if(grandParentView.GetChildViewAt(i) == parentOldView)
+    {
+      std::vector<View> after;
+      for(uint32_t j = i + 1; j < gc; ++j)
+        after.push_back(grandParentView.GetChildViewAt(j));
+      grandParentView.Remove(parentOldView);
+      for(const auto& v : after) grandParentView.Remove(v);
+      grandParentView.Add(parentNewView);
+      for(const auto& v : after) grandParentView.Add(v);
+      break;
+    }
+  }
+
+  // Float-in the changed child so it appears with the same upward-floating
+  // feel as stagger-revealed children.
+  if(!changedChildId.empty())
+  {
+    View freshView = mDiffEngine.GetView(changedChildId);
+    if(freshView) FloatInView(freshView);
+  }
+}
+
+void A2uiRenderer::CopyLayoutParams(View oldView, View newView)
+{
+  if(!oldView || !newView) return;
+
+  // Copy margin (parent-assigned layout spacing, not component-declared size)
+  newView.SetMargin(oldView.GetMargin());
+
+  // Copy FlexLayoutParams if present (flex grow/shrink/basis from parent)
+  FlexLayoutParams flexParams;
+  if(oldView.TryGetLayoutParams(flexParams))
+  {
+    newView.SetLayoutParams(flexParams);
+  }
+
+  // NOTE: Do NOT copy requested width/height — the new view already has its
+  // own dimensions set from the JSON component definition. Copying the old
+  //
+}
+
+void A2uiRenderer::RetireComponentWatchers(DataModel& model, const std::string& componentId)
+{
+  auto it = mComponentWatchers.find(componentId);
+
+
+  if(it == mComponentWatchers.end()) return;
+
+  model.UnwatchAll(it->second);
+  mComponentWatchers.erase(it);
+}
+
+std::vector<std::string> A2uiRenderer::FilterTopLevelChanged(
+  const std::vector<std::string>& changedIds,
+  const SurfaceComponentsModel& components) const
+{
+  // Build a set for O(1) lookup
+  std::unordered_set<std::string> changedSet(changedIds.begin(), changedIds.end());
+
+  std::vector<std::string> result;
+  for(const std::string& id : changedIds)
+  {
+    // Walk up the parent chain; if any ancestor is also in changedSet,
+    // this component is covered by the ancestor's rebuild → skip it.
+    bool coveredByAncestor = false;
+    std::string parentId = components.GetParentId(id);
+    while(!parentId.empty())
+    {
+      if(changedSet.count(parentId))
+      {
+        coveredByAncestor = true;
+        break;
+      }
+      parentId = components.GetParentId(parentId);
+    }
+
+    if(!coveredByAncestor)
+    {
+      result.push_back(id);
+    }
+  }
+  return result;
+}
+
+
 } // namespace A2ui
+

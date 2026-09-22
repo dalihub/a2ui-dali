@@ -1,0 +1,20 @@
+{
+    "version": "v0.9",
+    "updateComponents": {
+        "surfaceId": "movie-cd4ec28a-3086-4e6c-ab19-bead2e3e1248",
+        "components": [
+            {
+                "id": "meta_info_row",
+                "component": "Row",
+                "children": [
+                    "release_date",
+                    "country",
+                    "genres",
+                    "runtime",
+                    "vote_average"
+                ],
+                "align": "center"
+            }
+        ]
+    }
+}

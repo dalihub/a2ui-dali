@@ -16,7 +16,7 @@ MAP = {
     "RenderChoicePicker": "choice-picker", "RenderSlider": "slider",
     "RenderDateTimeInput": "date-time-input", "RenderProgressBar": "progress-bar",
     "RenderVideo": "video", "RenderAudioPlayer": "audio-player", "RenderTabs": "tabs",
-    "RenderModal": "modal", "RenderList": "list", "RenderIcon": "icon",
+    "RenderModal": "modal", "RenderList": "list", "RenderIcon": "icon", "RenderView": "view",
 }
 
 src = open(SRC).read()

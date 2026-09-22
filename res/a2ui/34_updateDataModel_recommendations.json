@@ -1,0 +1,34 @@
+{
+    "version": "v0.9",
+    "updateDataModel": {
+        "surfaceId": "movie-cd4ec28a-3086-4e6c-ab19-bead2e3e1248",
+        "path": "/recommendations",
+        "value": [
+            {
+                "title": "Cool Hand Luke",
+                "vote_average": 7.744,
+                "poster_path": "https://image.tmdb.org/t/p/w500/4ykzTiHKLamh3eZJ8orVICtU2Jp.jpg"
+            },
+            {
+                "title": "McVicar",
+                "vote_average": 6.524,
+                "poster_path": "https://image.tmdb.org/t/p/w500/oA2yUKbEKRMEtinpMtcRQsm0nt3.jpg"
+            },
+            {
+                "title": "Bronson",
+                "vote_average": 6.958,
+                "poster_path": "https://image.tmdb.org/t/p/w500/zoWdemYy4qV5lUcLWXpeYhms0Xe.jpg"
+            },
+            {
+                "title": "Extremely Wicked, Shockingly Evil and Vile",
+                "vote_average": 6.996,
+                "poster_path": "https://image.tmdb.org/t/p/w500/a7dVwEBU3vupg3hZQMeyL6ksz0F.jpg"
+            },
+            {
+                "title": "Papillon",
+                "vote_average": 7.827,
+                "poster_path": "https://image.tmdb.org/t/p/w500/356oqQpug682OERsWV0bGZ0YxwQ.jpg"
+            }
+        ]
+    }
+}

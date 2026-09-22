@@ -23,7 +23,7 @@ extern const UiColor COLOR_BTN_SECONDARY   = A2uiTheme::Color("Surface");       
 extern const UiColor COLOR_BTN_BORDER      = A2uiTheme::Color("Outline");                   // #B7B7BB
 extern const UiColor COLOR_DIVIDER         = A2uiTheme::Color("Outline");                   // OneUI Divider = Outline
 extern const UiColor COLOR_IMG_PLACEHOLDER = A2uiTheme::Color("SurfaceContainer");          // #E4E4E7
-extern const UiColor COLOR_PLACEHOLDER_BG(0xfff0f0);                                        // missing-component debug box
+extern const UiColor COLOR_PLACEHOLDER_BG(0x3A3A3D);                                        // missing-component debug box (dark)
 extern const UiColor COLOR_PLACEHOLDER_TEXT = A2uiTheme::Color("Red");                      // #F64141
 extern const UiColor COLOR_ERROR           = A2uiTheme::Color("Red");
 extern const UiColor COLOR_INPUT_BG        = A2uiTheme::Color("Surface");                   // #FFFFFF
@@ -38,5 +38,10 @@ extern const UiColor COLOR_MODAL_OVERLAY(0x00000066);                           
 extern const UiColor COLOR_SLIDER_TRACK    = A2uiTheme::Color("OutlineLow");                // light grey track
 extern const UiColor COLOR_SLIDER_FILL     = A2uiTheme::Color("OnSurfaceContainer");        // subtle grey fill
 extern const UiColor COLOR_SLIDER_THUMB    = A2uiTheme::Color("OnSurfaceContainerHighest"); // dark thumb
+
+// Video / audio play-glyph colour (white icon on coloured background)
+extern const UiColor COLOR_ICON_ON_PRIMARY  = UiColor(0xFFFFFF);
+// Video frame placeholder background (dark)
+extern const UiColor COLOR_VIDEO_FRAME      = UiColor(0x1C1C1E);
 
 } // namespace A2ui
