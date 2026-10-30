@@ -38,7 +38,7 @@ extern const Dali::Ui::UiColor COLOR_SLIDER_THUMB;
 
 // Video / audio play-glyph colour (white icon on coloured background)
 extern const Dali::Ui::UiColor COLOR_ICON_ON_PRIMARY;   // 0xFFFFFF
-// Video frame placeholder background (dark)
+// Video frame placeholder background
 extern const Dali::Ui::UiColor COLOR_VIDEO_FRAME;        // 0x202024
 
 } // namespace A2ui

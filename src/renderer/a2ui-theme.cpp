@@ -99,23 +99,23 @@ const std::unordered_map<std::string, uint32_t>& BundledOneUIDark()
   return kPalette;
 }
 
-// Default = OneUI dark theme. Set A2UI_THEME=oneui to fall back to OneUI light,
-// or A2UI_THEME=composer for the composer web palette.
-bool UseDarkPalette()
+// A2UI_THEME selects the palette: unset = composer web (gallery parity),
+// "oneui" = OneUI light, "oneui-dark" = OneUI dark.
+const std::unordered_map<std::string, uint32_t>& ActivePalette()
 {
   const char* t = std::getenv("A2UI_THEME");
-  return !(t && (std::strcmp(t, "oneui") == 0 || std::strcmp(t, "composer") == 0));
+  if(t && std::strcmp(t, "oneui-dark") == 0) return BundledOneUIDark();
+  if(t && std::strcmp(t, "oneui") == 0) return BundledOneUILight();
+  return BundledComposerWeb();
 }
 } // namespace
 
 UiColor A2uiTheme::Color(const std::string& id)
 {
-  // Default = OneUI dark theme. A2UI_THEME=oneui → light, A2UI_THEME=composer → composer web.
+  // Target A (live composer) is the active styling reference: resolve from the
+  // composer-web palette by default (see ActivePalette for the overrides).
   // Call sites are unchanged — they still ask by semantic colour id.
-  const char* t = std::getenv("A2UI_THEME");
-  const auto& palette = UseDarkPalette() ? BundledOneUIDark()
-                      : (t && std::strcmp(t, "composer") == 0) ? BundledComposerWeb()
-                                                               : BundledOneUILight();
+  const auto& palette = ActivePalette();
   auto it = palette.find(id);
   if(it != palette.end())
   {
