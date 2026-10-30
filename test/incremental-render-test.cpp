@@ -437,6 +437,67 @@ void TestSelfContainingComponent(A2ui::A2uiHost& host, std::map<std::string, Vie
   ReportTest("full render of a cycle renders", !!views["self2"], "no view");
 }
 
+// ========================================================================
+// Test 10: A template component re-sent updates every place it is used:
+//          each List sharing it, and an ordinary use of the same id.
+// ========================================================================
+void TestSharedTemplate(A2ui::A2uiHost& host, std::map<std::string, View>& views)
+{
+  std::cout << "\n=== Test: Shared Template Re-sent ===" << std::endl;
+
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"shr","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"shr","components":[
+    {"id":"root","component":"Column","children":["l1","l2","it"]},
+    {"id":"l1","component":"List","children":{"componentId":"it","path":"/a"}},
+    {"id":"l2","component":"List","children":{"componentId":"it","path":"/b"}},
+    {"id":"it","component":"Text","text":"old"}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"shr","path":"/a","value":[1]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"shr","path":"/b","value":[1]}})");
+  ReportTest("shared template before", Joined(views["shr"]) == "old,old,old",
+             "got '" + Joined(views["shr"]) + "'");
+
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"shr","components":[
+    {"id":"it","component":"Text","text":"new"}
+  ]}})");
+  ReportTest("every use of the re-sent template updates", Joined(views["shr"]) == "new,new,new",
+             "got '" + Joined(views["shr"]) + "'");
+}
+
+// ========================================================================
+// Test 11: The inline children.template List releases its old items on re-send.
+// ========================================================================
+void TestInlineTemplateResend(A2ui::A2uiHost& host, std::map<std::string, View>& views)
+{
+  std::cout << "\n=== Test: Inline Template List Re-sent ===" << std::endl;
+
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"inl","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"inl","path":"/rows","value":[{"n":"1"},{"n":"2"}]}})");
+  const char* list = R"({"version":"v0.9","updateComponents":{"surfaceId":"inl","components":[
+    {"id":"root","component":"Column","children":["lst"]},
+    {"id":"lst","component":"List","children":{"template":{"dataBinding":"/rows",
+      "components":[{"id":"row","component":"Text","text":{"path":"n"}}]}}}
+  ]}})";
+  host.JsonFeed(list);
+
+  A2ui::SurfaceModel* surface = host.GetSurfaces().GetSurface("inl");
+  size_t before = surface ? surface->GetDataModel().ObserverCount() : 0;
+  for(int i = 0; i < 3; ++i)
+  {
+    host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"inl","components":[
+      {"id":"lst","component":"List","children":{"template":{"dataBinding":"/rows",
+        "components":[{"id":"row","component":"Text","text":{"path":"n"}}]}}}
+    ]}})");
+  }
+  size_t after = surface ? surface->GetDataModel().ObserverCount() : 0;
+  ReportTest("inline template: observer count stays flat", before > 0 && after == before,
+             "before " + std::to_string(before) + ", after " + std::to_string(after));
+
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"inl","path":"/rows/0/n","value":"Z"}})");
+  ReportTest("inline template items stay bound", Joined(views["inl"]) == "Z,2",
+             "got '" + Joined(views["inl"]) + "'");
+}
+
 } // anonymous namespace
 
 class TestApp : public Dali::ConnectionTracker
@@ -471,6 +532,8 @@ private:
     TestListRebuildAcrossSurfaces(mHost, mViews);
     TestListResendReleasesItems(mHost, mViews);
     TestSelfContainingComponent(mHost, mViews);
+    TestSharedTemplate(mHost, mViews);
+    TestInlineTemplateResend(mHost, mViews);
 
     std::cout << "\n========================================" << std::endl;
     std::cout << "  RESULTS: " << gPassed << "/" << gTotal << " passed" << std::endl;

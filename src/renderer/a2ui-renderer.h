@@ -263,6 +263,9 @@ private:
   /// The generation currently being built (null outside BuildTemplateChildren).
   std::shared_ptr<WatchScope> mWatchScope;
 
+  /// Start a template item generation under the active one (see mComponentScopes).
+  std::shared_ptr<WatchScope> BeginItemGeneration();
+
   /// Watch @p path, recording the observer in the active generation (if any).
   void RecordWatch(DataModel& model, const std::string& path, DataChangeCallback cb) const;
 
@@ -373,7 +376,7 @@ private:
   /// A changed ancestor implies the descendant is rebuilt as part of the ancestor's
   /// recursive RenderComponent — no need to handle it separately.
   /// @p changedIds with each template component (or descendant) replaced by the
-  /// rendered List that instantiates it.
+  /// rendered Lists that instantiate it.
   std::vector<std::string> MapTemplatesToLists(const std::vector<std::string>& changedIds,
                                                const SurfaceComponentsModel& components) const;
 

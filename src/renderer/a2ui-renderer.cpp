@@ -177,6 +177,9 @@ View A2uiRenderer::Render(SurfaceModel& surface)
   // with them — a full render starts outside any template generation.
   surface.GetDataModel().ClearObservers();
   mWatchScope.reset();
+  // Every watch is gone, so is what the incremental bookkeeping recorded about them.
+  mComponentWatchers.clear();
+  mComponentScopes.clear();
 
   // Release tap detectors from the previous render. The new view tree will
   // attach fresh detectors for its own Button / Card tap targets.
@@ -555,15 +558,7 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
 
   // This generation's watches, linked to the generation that created this container so an
   // outer rebuild also retires everything built beneath it.
-  auto own    = std::make_shared<WatchScope>();
-  own->parent = mWatchScope;
-  // A top-level generation belongs to the component rendering it (the List): retiring
-  // that component's watchers retires its items too. Nested generations are covered by
-  // their parent generation, which records their watches as well.
-  if(mTemplateItemDepth == 0 && !mCurrentRenderingId.empty())
-  {
-    mComponentScopes[mCurrentRenderingId].push_back(own);
-  }
+  auto own = BeginItemGeneration();
   auto rendered = std::make_shared<int>(-1);
 
   auto build = [self, templateId, arrayPath, comps, scope, container, prepareItem,
@@ -647,6 +642,20 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
   // Recorded in the ENCLOSING generation: this container is one of its children.
   RecordWatch(ctx.GetDataModel(), arrayPath,
               [build](const std::string&, const std::string&) mutable { build(); });
+}
+
+std::shared_ptr<A2uiRenderer::WatchScope> A2uiRenderer::BeginItemGeneration()
+{
+  auto generation    = std::make_shared<WatchScope>();
+  generation->parent = mWatchScope;
+  // A top-level generation belongs to the component rendering it (the List): retiring
+  // that component's watchers retires its items too. Nested generations are covered by
+  // their parent generation, which records their watches as well.
+  if(mTemplateItemDepth == 0 && !mCurrentRenderingId.empty())
+  {
+    mComponentScopes[mCurrentRenderingId].push_back(generation);
+  }
+  return generation;
 }
 
 void A2uiRenderer::RetainTapDetector(Dali::TapGestureDetector detector)
@@ -1336,9 +1345,9 @@ void A2uiRenderer::RetireComponentWatchers(DataModel& model, const std::string& 
 std::vector<std::string> A2uiRenderer::MapTemplatesToLists(
   const std::vector<std::string>& changedIds, const SurfaceComponentsModel& components) const
 {
-  // Owning List of every component a List renders per item: its template component and
-  // that component's descendants.
-  std::unordered_map<std::string, std::string> owner;
+  // The Lists that render each component per item: its template component and that
+  // component's descendants. A template can be shared by several Lists.
+  std::unordered_map<std::string, std::vector<std::string>> owners;
   for(const auto& entry : components.GetAll())
   {
     const ComponentModel& list = entry.second;
@@ -1346,12 +1355,14 @@ std::vector<std::string> A2uiRenderer::MapTemplatesToLists(
     const TreeNode* children = list.rawNode->Find("children");
     const TreeNode* tmpl     = children ? children->Find("componentId") : nullptr;
     if(!tmpl || tmpl->GetType() != TreeNode::STRING) continue;
-    std::vector<std::string> pending{tmpl->GetString()};
+    std::unordered_set<std::string> seen;
+    std::vector<std::string>        pending{tmpl->GetString()};
     while(!pending.empty())
     {
       std::string id = pending.back();
       pending.pop_back();
-      if(!owner.emplace(id, list.id).second) continue;
+      if(!seen.insert(id).second) continue;
+      owners[id].push_back(list.id);
       if(const ComponentModel* comp = components.GetComponent(id))
       {
         pending.insert(pending.end(), comp->childIds.begin(), comp->childIds.end());
@@ -1361,18 +1372,35 @@ std::vector<std::string> A2uiRenderer::MapTemplatesToLists(
   }
 
   std::vector<std::string>        result;
-  std::unordered_set<std::string> seen;
+  std::unordered_set<std::string> added;
+  auto add = [&](const std::string& id) {
+    if(added.insert(id).second) result.push_back(id);
+  };
   for(const auto& id : changedIds)
   {
-    auto it = owner.find(id);
-    if(it == owner.end())
+    auto it = owners.find(id);
+    // Not a template, or also used as an ordinary child with a view of its own.
+    if(it == owners.end() || mDiffEngine.HasView(id)) add(id);
+    if(it == owners.end()) continue;
+
+    // Re-render every rendered List that instantiates it. A List that is itself a
+    // template item has no view of its own: walk out to the rendered List around it.
+    // A List not rendered at all picks the template up when it renders.
+    std::unordered_set<std::string> visited;
+    std::vector<std::string>        lists = it->second;
+    while(!lists.empty())
     {
-      if(seen.insert(id).second) result.push_back(id);
-    }
-    else if(mDiffEngine.HasView(it->second) && seen.insert(it->second).second)
-    {
-      // A List not rendered yet picks the template up when it renders.
-      result.push_back(it->second);
+      std::string list = lists.back();
+      lists.pop_back();
+      if(!visited.insert(list).second) continue;
+      if(mDiffEngine.HasView(list))
+      {
+        add(list);
+      }
+      else if(auto outer = owners.find(list); outer != owners.end())
+      {
+        lists.insert(lists.end(), outer->second.begin(), outer->second.end());
+      }
     }
   }
   return result;

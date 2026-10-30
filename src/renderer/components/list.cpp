@@ -149,8 +149,11 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
             }
           }
 
-          // Items are owned by this list, not the incremental bookkeeping (see
-          // mTemplateItemDepth): they all share the template's component ids.
+          // Items are owned by this list's generation, not the incremental bookkeeping
+          // (see mTemplateItemDepth): they all share the template's component ids.
+          std::shared_ptr<WatchScope> generation = BeginItemGeneration();
+          std::shared_ptr<WatchScope> savedScope = mWatchScope;
+          mWatchScope                            = generation;
           TemplateItemScope itemScope(mTemplateItemDepth);
           int itemIndex = 0;
           for(auto arrIt = arrayNode->CBegin(); arrIt != arrayNode->CEnd(); ++arrIt)
@@ -167,6 +170,7 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
 
             itemIndex++;
           }
+          mWatchScope = savedScope;
 
           // Guard: skip stagger on partial/incremental re-renders to prevent
           // repeated upward-floating animations on every data update.
