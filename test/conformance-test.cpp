@@ -234,7 +234,7 @@ void TestComponentTypeCoverage(const std::string& dataDir)
 {
   std::cout << "\n=== Test: Component Type Coverage ===" << std::endl;
 
-  // List of all v0.9 basic catalog components
+  // List of all v0.9 basic catalog components, plus the renderer's View extension
   std::vector<std::string> allComponents = {
     "Text", "Image", "Icon", "View", "Video", "AudioPlayer",
     "Row", "Column", "List", "Card", "Tabs", "Modal", "Divider",
@@ -298,7 +298,7 @@ void TestComponentTypeCoverage(const std::string& dataDir)
     }
     else if(comp == "View")
     {
-      updateMsg = R"({"version":"v0.9","updateComponents":{"surfaceId":"test","components":[{"id":"root","component":"View","name":"home"}]}})";
+      updateMsg = R"({"version":"v0.9","updateComponents":{"surfaceId":"test","components":[{"id":"root","component":"View","width":24,"height":24}]}})";
     }
     else if(comp == "Video")
     {
