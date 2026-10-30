@@ -340,6 +340,77 @@ void TestListResend(A2ui::A2uiHost& host, std::map<std::string, View>& views)
              "got '" + Joined(views["lst"]) + "'");
 }
 
+// ========================================================================
+// Test 7: A List rebuild on one surface must not touch another surface's
+//         incremental state, even when component ids collide.
+// ========================================================================
+void TestListRebuildAcrossSurfaces(A2ui::A2uiHost& host, std::map<std::string, View>& views)
+{
+  std::cout << "\n=== Test: List Rebuild Across Surfaces ===" << std::endl;
+
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"xA","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"xA","components":[
+    {"id":"root","component":"Column","children":["lst"]},
+    {"id":"lst","component":"List","children":{"componentId":"item","path":"/items"}},
+    {"id":"item","component":"Text","text":{"path":"name"}}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"xA","path":"/items","value":[{"name":"a"}]}})");
+
+  // Surface B uses "item" for an ordinary container.
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"xB","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"xB","components":[
+    {"id":"root","component":"Column","children":["item"]},
+    {"id":"item","component":"Column","children":["p","st"]},
+    {"id":"p","component":"Text","text":{"path":"/p"}},
+    {"id":"st","component":"Text","text":"pending"}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"xB","path":"/p","value":"100"}})");
+
+  // A's list rebuilds while B owns the incremental state.
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"xA","path":"/items","value":[{"name":"a"},{"name":"b"}]}})");
+  ReportTest("list on surface A rebuilt", Joined(views["xA"]) == "a,b", "got '" + Joined(views["xA"]) + "'");
+
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"xB","components":[
+    {"id":"st","component":"Text","text":"done"}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"xB","path":"/p","value":"200"}})");
+  ReportTest("surface B unaffected by A's list rebuild", Joined(views["xB"]) == "200,done",
+             "got '" + Joined(views["xB"]) + "'");
+}
+
+// ========================================================================
+// Test 8: Re-sending a List retires its previous items' watches.
+// ========================================================================
+void TestListResendReleasesItems(A2ui::A2uiHost& host, std::map<std::string, View>& views)
+{
+  std::cout << "\n=== Test: Re-sent List Releases Its Old Items ===" << std::endl;
+
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"rel","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"rel","components":[
+    {"id":"root","component":"Column","children":["hdr","list"]},
+    {"id":"hdr","component":"Text","text":"Items"},
+    {"id":"list","component":"List","children":{"componentId":"item","path":"/items"}},
+    {"id":"item","component":"Text","text":{"path":"name"}}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"rel","path":"/items","value":[{"name":"a"},{"name":"b"},{"name":"c"}]}})");
+
+  A2ui::SurfaceModel* surface = host.GetSurfaces().GetSurface("rel");
+  size_t before = surface ? surface->GetDataModel().ObserverCount() : 0;
+  for(int i = 0; i < 3; ++i)
+  {
+    host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"rel","components":[
+      {"id":"list","component":"List","children":{"componentId":"item","path":"/items"}}
+    ]}})");
+  }
+  size_t after = surface ? surface->GetDataModel().ObserverCount() : 0;
+  ReportTest("observer count stays flat across re-sends", before > 0 && after == before,
+             "before " + std::to_string(before) + ", after " + std::to_string(after));
+
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"rel","path":"/items/0/name","value":"Z"}})");
+  ReportTest("re-sent list items stay bound", Joined(views["rel"]) == "Items,Z,b,c",
+             "got '" + Joined(views["rel"]) + "'");
+}
+
 } // anonymous namespace
 
 class TestApp : public Dali::ConnectionTracker
@@ -371,6 +442,8 @@ private:
     TestTwoSurfaces(mHost, mViews);
     TestSiblingBindings(mHost, mViews);
     TestListResend(mHost, mViews);
+    TestListRebuildAcrossSurfaces(mHost, mViews);
+    TestListResendReleasesItems(mHost, mViews);
 
     std::cout << "\n========================================" << std::endl;
     std::cout << "  RESULTS: " << gPassed << "/" << gTotal << " passed" << std::endl;

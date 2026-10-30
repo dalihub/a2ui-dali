@@ -210,7 +210,8 @@ View A2uiRenderer::RenderComponent(const std::string& id,
   // reuse the existing View from the DiffEngine instead of re-rendering it.
   // This lets a parent re-render run its layout logic while only re-rendering
   // the specific child that changed — siblings keep their existing Views.
-  if(mPartialRenderMode && mPartialRenderIds.find(id) == mPartialRenderIds.end())
+  if(mPartialRenderMode && mTemplateItemDepth == 0 &&
+     mPartialRenderIds.find(id) == mPartialRenderIds.end())
   {
     if(mDiffEngine.HasView(id))
     {
@@ -245,11 +246,14 @@ View A2uiRenderer::RenderComponent(const std::string& id,
     Dali::Animation shimmer;
     View            placeholder = ShimmerEffect::BuildOverlay(shimmer);
     LoopWhileOnScene(placeholder, shimmer);
-    mDiffEngine.RegisterView(id, placeholder);
-    // Remember this cached view is only a shimmer placeholder, so the
-    // stagger-reveal treats the component's first REAL render as its first
-    // appearance (see HasRealView).
-    mShimmerIds.insert(id);
+    if(mTemplateItemDepth == 0)
+    {
+      mDiffEngine.RegisterView(id, placeholder);
+      // Remember this cached view is only a shimmer placeholder, so the
+      // stagger-reveal treats the component's first REAL render as its first
+      // appearance (see HasRealView).
+      mShimmerIds.insert(id);
+    }
     return placeholder;
   }
 
@@ -282,8 +286,11 @@ View A2uiRenderer::RenderComponent(const std::string& id,
   if(result)
   {
     A11yBridge::Apply(result, *comp, ctx);
-    mDiffEngine.RegisterView(id, result);
-    mShimmerIds.erase(id); // a real view replaced any shimmer placeholder
+    if(mTemplateItemDepth == 0)
+    {
+      mDiffEngine.RegisterView(id, result);
+      mShimmerIds.erase(id); // a real view replaced any shimmer placeholder
+    }
   }
 
   mCurrentRenderingId = prevRenderingId;
@@ -531,6 +538,13 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
   // outer rebuild also retires everything built beneath it.
   auto own    = std::make_shared<WatchScope>();
   own->parent = mWatchScope;
+  // A top-level generation belongs to the component rendering it (the List): retiring
+  // that component's watchers retires its items too. Nested generations are covered by
+  // their parent generation, which records their watches as well.
+  if(mTemplateItemDepth == 0 && !mCurrentRenderingId.empty())
+  {
+    mComponentScopes[mCurrentRenderingId].push_back(own);
+  }
   auto rendered = std::make_shared<int>(-1);
 
   auto build = [self, templateId, arrayPath, comps, scope, container, prepareItem,
@@ -563,6 +577,7 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
       // back the one cached view registered under the template id for each index, and
       // re-adding that single view leaves the list with only its last item.
       PartialRenderStateGuard itemGuard(self->mPartialRenderMode, self->mPartialRenderIds);
+      TemplateItemScope       itemScope(self->mTemplateItemDepth);
       self->mPartialRenderMode = false;
       self->mPartialRenderIds.clear();
       for(int i = 0; i < count; ++i)
@@ -641,7 +656,7 @@ void A2uiRenderer::RecordWatch(DataModel& model, const std::string& path,
   }
   // Associate this watcher with the component currently being rendered so
   // an incremental replacement can retire exactly its watchers.
-  if(!mCurrentRenderingId.empty())
+  if(!mCurrentRenderingId.empty() && mTemplateItemDepth == 0)
   {
     mComponentWatchers[mCurrentRenderingId].push_back(id);
   }
@@ -895,10 +910,19 @@ void A2uiRenderer::InvalidateRenderState()
   mDiffEngine.Clear();
   mRenderedSurfaceId.clear();
   mComponentWatchers.clear();
+  mComponentScopes.clear();
   mWatchScope.reset();
   // A new surface re-renders everything from scratch — forget which component
   // IDs were shimmer placeholders so their first real appearance animates.
   mShimmerIds.clear();
+}
+
+View A2uiRenderer::RenderFull(SurfaceModel& surface)
+{
+  InvalidateRenderState();
+  View view = Render(surface);
+  if(view) mRenderedSurfaceId = surface.GetSurfaceId();
+  return view;
 }
 
 View A2uiRenderer::RenderIncremental(SurfaceModel& surface)
@@ -907,23 +931,21 @@ View A2uiRenderer::RenderIncremental(SurfaceModel& surface)
   // by component id only, so another surface's "root" must not be taken for this one's.
   if(!IsRendered() || mRenderedSurfaceId != surface.GetSurfaceId())
   {
-    InvalidateRenderState();
-    View view = Render(surface);
-    if(view) mRenderedSurfaceId = surface.GetSurfaceId();
-    return view;
+    return RenderFull(surface);
   }
 
   const SurfaceComponentsModel& components = surface.GetComponentsModel();
   const auto& changedIds = components.GetLastModifiedIds();
 
-  // Root itself changed → full re-render
+  // Root itself changed → full re-render. The DiffEngine is kept: it tells the
+  // entrance animations which components were already visible.
   for(const auto& id : changedIds)
   {
-    if(id == "root")
-    {
-      return Render(surface);
-    }
+    if(id == "root") return Render(surface);
   }
+  // Template items have no views of their own in the DiffEngine (their List owns them),
+  // so a changed template component is applied by re-rendering the List that uses it.
+  std::vector<std::string> updateIds = MapTemplatesToLists(changedIds, components);
   // Configure action dispatcher (same as full Render)
   mActionDispatcher.SetSurfaceId(surface.GetSurfaceId());
   mActionDispatcher.SetSendDataModel(surface.GetSendDataModel());
@@ -934,7 +956,7 @@ View A2uiRenderer::RenderIncremental(SurfaceModel& surface)
 
   try
   {
-    ApplyIncrementalUpdates(surface, changedIds, ctx);
+    ApplyIncrementalUpdates(surface, updateIds, ctx);
   }
   catch(const std::exception& e)
   {
@@ -1039,7 +1061,9 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
   for(const std::string& modId : components.GetLastModifiedIds())
   {
     if(modId == componentId) continue;
-    for(std::string p = components.GetParentId(modId); !p.empty(); p = components.GetParentId(p))
+    std::unordered_set<std::string> visited{modId}; // a malformed parent cycle must not hang
+    for(std::string p = components.GetParentId(modId); !p.empty() && visited.insert(p).second;
+        p = components.GetParentId(p))
     {
       if(p == componentId)
       {
@@ -1270,13 +1294,69 @@ void A2uiRenderer::CopyLayoutParams(View oldView, View newView)
 
 void A2uiRenderer::RetireComponentWatchers(DataModel& model, const std::string& componentId)
 {
+  auto scopes = mComponentScopes.find(componentId);
+  if(scopes != mComponentScopes.end())
+  {
+    for(const auto& scope : scopes->second)
+    {
+      model.UnwatchAll(scope->ids);
+      scope->ids.clear();
+      ReleaseTapDetectors(scope->tapDetectors);
+      scope->tapDetectors.clear();
+    }
+    mComponentScopes.erase(scopes);
+  }
+
   auto it = mComponentWatchers.find(componentId);
-
-
   if(it == mComponentWatchers.end()) return;
 
   model.UnwatchAll(it->second);
   mComponentWatchers.erase(it);
+}
+
+std::vector<std::string> A2uiRenderer::MapTemplatesToLists(
+  const std::vector<std::string>& changedIds, const SurfaceComponentsModel& components) const
+{
+  // Owning List of every component a List renders per item: its template component and
+  // that component's descendants.
+  std::unordered_map<std::string, std::string> owner;
+  for(const auto& entry : components.GetAll())
+  {
+    const ComponentModel& list = entry.second;
+    if(list.type != "List" || !list.rawNode) continue;
+    const TreeNode* children = list.rawNode->Find("children");
+    const TreeNode* tmpl     = children ? children->Find("componentId") : nullptr;
+    if(!tmpl || tmpl->GetType() != TreeNode::STRING) continue;
+    std::vector<std::string> pending{tmpl->GetString()};
+    while(!pending.empty())
+    {
+      std::string id = pending.back();
+      pending.pop_back();
+      if(!owner.emplace(id, list.id).second) continue;
+      if(const ComponentModel* comp = components.GetComponent(id))
+      {
+        pending.insert(pending.end(), comp->childIds.begin(), comp->childIds.end());
+        if(!comp->childId.empty()) pending.push_back(comp->childId);
+      }
+    }
+  }
+
+  std::vector<std::string>        result;
+  std::unordered_set<std::string> seen;
+  for(const auto& id : changedIds)
+  {
+    auto it = owner.find(id);
+    if(it == owner.end())
+    {
+      if(seen.insert(id).second) result.push_back(id);
+    }
+    else if(mDiffEngine.HasView(it->second) && seen.insert(it->second).second)
+    {
+      // A List not rendered yet picks the template up when it renders.
+      result.push_back(it->second);
+    }
+  }
+  return result;
 }
 
 std::vector<std::string> A2uiRenderer::FilterTopLevelChanged(
@@ -1292,8 +1372,9 @@ std::vector<std::string> A2uiRenderer::FilterTopLevelChanged(
     // Walk up the parent chain; if any ancestor is also in changedSet,
     // this component is covered by the ancestor's rebuild → skip it.
     bool coveredByAncestor = false;
+    std::unordered_set<std::string> visited{id}; // a malformed parent cycle must not hang
     std::string parentId = components.GetParentId(id);
-    while(!parentId.empty())
+    while(!parentId.empty() && visited.insert(parentId).second)
     {
       if(changedSet.count(parentId))
       {

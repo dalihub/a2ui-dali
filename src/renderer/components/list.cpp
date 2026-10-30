@@ -149,6 +149,9 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
             }
           }
 
+          // Items are owned by this list, not the incremental bookkeeping (see
+          // mTemplateItemDepth): they all share the template's component ids.
+          TemplateItemScope itemScope(mTemplateItemDepth);
           int itemIndex = 0;
           for(auto arrIt = arrayNode->CBegin(); arrIt != arrayNode->CEnd(); ++arrIt)
           {

@@ -68,6 +68,9 @@ public:
   /// Reset render state so next call goes through full Render().
   void InvalidateRenderState();
 
+  /// Clean full render of @p surface that also resets the incremental state to it.
+  Dali::Ui::View RenderFull(SurfaceModel& surface);
+
   /// Surface whose views the incremental state (DiffEngine, watchers) describes; empty when
   /// nothing is rendered. Component ids ("root" included) repeat across surfaces, so that
   /// state is only valid for this one surface.
@@ -369,6 +372,11 @@ private:
   /// Filter changedIds to only those whose ancestors are NOT also in the set.
   /// A changed ancestor implies the descendant is rebuilt as part of the ancestor's
   /// recursive RenderComponent — no need to handle it separately.
+  /// @p changedIds with each template component (or descendant) replaced by the
+  /// rendered List that instantiates it.
+  std::vector<std::string> MapTemplatesToLists(const std::vector<std::string>& changedIds,
+                                               const SurfaceComponentsModel& components) const;
+
   std::vector<std::string> FilterTopLevelChanged(
     const std::vector<std::string>& changedIds,
     const SurfaceComponentsModel& components) const;
@@ -381,6 +389,32 @@ private:
   /// Used by RetireComponentWatchers during incremental replacement.
   /// Mutable because RecordWatch is const (called from const WatchBinding etc).
   mutable std::unordered_map<std::string, std::vector<uint32_t>> mComponentWatchers;
+
+  /// componentId → the template item generations its render created (a List's items).
+  /// Retired together with that component's watchers, so a re-sent List does not leave
+  /// its previous items' watches and tap detectors behind.
+  std::unordered_map<std::string, std::vector<std::shared_ptr<WatchScope>>> mComponentScopes;
+
+  /// > 0 while template items are being rendered. Items are owned by their generation
+  /// (WatchScope), not by the incremental bookkeeping: they share one component id per
+  /// template, so they are never registered in the DiffEngine or mComponentWatchers.
+  /// A data-driven List rebuild can also run while another surface owns that state.
+  int mTemplateItemDepth = 0;
+
+  /// Marks a stretch of template item rendering (see mTemplateItemDepth).
+  struct TemplateItemScope
+  {
+    int& depth;
+    explicit TemplateItemScope(int& d)
+    : depth(d)
+    {
+      ++depth;
+    }
+    ~TemplateItemScope()
+    {
+      --depth;
+    }
+  };
 
   // === Partial rendering (local render) ===
 
