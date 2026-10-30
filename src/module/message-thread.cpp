@@ -25,8 +25,6 @@
 
 namespace A2ui {
 
-// --- AI-generated section starts --[20260817-101800-]-
-// --- Code Writer: Cline SR
 // Ported from AGenUI core/src/module/agenui_message_thread.cpp
 
 MessageThread::MessageThread(const std::string& name) : _name(name), _isRunning(false), _shouldStop(false) {
@@ -208,6 +206,5 @@ void MessageThread::processDelayedTasks() {
         }
     }
 }
-// --- AI-generated section End --[20260817-101800-]-
 
 } // namespace A2ui

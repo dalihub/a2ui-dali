@@ -25,8 +25,6 @@
 
 namespace A2ui {
 
-// --- AI-generated section starts --[20260817-101800-]-
-// --- Code Writer: Cline SR
 // Ported from AGenUI core/src/module/agenui_message_thread.h
 
 /**
@@ -107,6 +105,5 @@ public:
     std::atomic_bool _shouldStop;                                   // stop flag
     std::thread::id _threadId;                                      // thread ID
 };
-// --- AI-generated section End --[20260817-101800-]-
 
 } // namespace A2ui

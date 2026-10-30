@@ -28,7 +28,6 @@
 #include "stream-event-sink.h"
 #include <atomic>
 #include <memory>
-#include <mutex>
 
 
 namespace A2ui {
@@ -84,11 +83,9 @@ private:
     std::unique_ptr<MarkdownStreamPlugin> _markdownPlugin;
     std::unique_ptr<TextStreamPlugin> _textPlugin;
     std::unique_ptr<CompositeStreamPlugin> _compositePlugin;
-    std::recursive_mutex _mutex;
 
     std::string _queryContent;
-    std::string _mockServer = "C4";
-    std::atomic_bool _isRunning;
+    std::atomic_bool _isRunning{false};
 };
 
 } // namespace A2ui

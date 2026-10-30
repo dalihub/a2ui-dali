@@ -27,4 +27,11 @@
 #define AGENUI_LOG(fmt, ...) do { fprintf(stderr, "[Stream] " fmt "\n", ##__VA_ARGS__); } while(0)
 #define AGENUI_PERFORMANCE_LOG(tag, fmt, ...) do { } while(0)  // no-op by default
 
+// Verbose per-chunk tracing; compiled in only with -DA2UI_STREAM_DEBUG.
+#ifdef A2UI_STREAM_DEBUG
+#define AGENUI_DEBUG_LOG(fmt, ...) AGENUI_LOG(fmt, ##__VA_ARGS__)
+#else
+#define AGENUI_DEBUG_LOG(fmt, ...) do { } while(0)
+#endif
+
 #endif // A2UI_STREAM_LOGGER_H

@@ -64,10 +64,6 @@ namespace
 // Size of each chunk fed to the parser to simulate streaming arrival.
 constexpr std::size_t kChunkSize = 64;
 
-// --- AI-generated section starts --[20260817-212800-]-
-// --- Code Writer: Cline SR
-// --- Designer: (none)
-//
 // Record of one verification check performed inside a sink callback.
 struct CheckResult
 {
@@ -294,10 +290,6 @@ std::string FlattenJsonArrayToStream(const std::string& raw)
 
 } // namespace
 
-// --- AI-generated section starts --[20260817-222700-]-
-// --- Code Writer: Cline SR
-// --- Designer: (none)
-//
 // Thread ID used for the worker thread that loads and parses the JSON file.
 constexpr int kWorkerThreadId = 1;
 
@@ -435,5 +427,3 @@ int main(int argc, char* argv[])
 
     return (failed == 0) ? 0 : 1;
 }
-// --- AI-generated section End --[20260817-222700]-
-// --- AI-generated section End --[20260817-212800]-

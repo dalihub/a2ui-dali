@@ -19,8 +19,6 @@
 
 namespace A2ui {
 
-// --- AI-generated section starts --[20260817-101800-]-
-// --- Code Writer: Cline SR
 // Ported from AGenUI core/src/module/agenui_ithread.h
 
 /**
@@ -73,6 +71,5 @@ public:
      */
     virtual void postDelayed(std::function<void()> task, unsigned long delayMillis) = 0;
 };
-// --- AI-generated section End --[20260817-101800-]-
 
 } // namespace A2ui

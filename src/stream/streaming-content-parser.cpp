@@ -57,7 +57,7 @@ namespace A2ui {
 
     void StreamingContentParser::processDataAssembling(const std::string& data) {
         AGENUI_PERFORMANCE_LOG("stream_assembling_begin", "");
-        AGENUI_LOG("%s", data.c_str());
+        AGENUI_DEBUG_LOG("%s", data.c_str());
         _extractor.appendData(data);
         auto results = _extractor.driveParser();
         dispatchParseResultsBatched(results);
@@ -160,7 +160,8 @@ namespace A2ui {
             ret = _sink->deleteSurface(data);
         }
         if (ret != Execute_Success) {
-            AGENUI_LOG("ret:%s, type:%d, data:%s", getExeCodeString(ret).c_str(), result.eventType, data.c_str());
+            AGENUI_LOG("ret:%s, type:%d, data:%s", getExeCodeString(ret).c_str(),
+                static_cast<int>(result.eventType), data.c_str());
         }
     }
 

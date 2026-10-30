@@ -21,8 +21,6 @@
 
 namespace A2ui {
 
-// --- AI-generated section starts --[20260817-101800-]-
-// --- Code Writer: Cline SR
 // Ported from AGenUI core/src/module/agenui_thread_manager.h
 
 /**
@@ -72,6 +70,5 @@ private:
     std::unordered_map<int, IThread*> _threads;
     std::mutex _mutex;
 };
-// --- AI-generated section End --[20260817-101800-]-
 
 } // namespace A2ui

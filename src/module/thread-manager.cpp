@@ -19,8 +19,6 @@
 
 namespace A2ui {
 
-// --- AI-generated section starts --[20260817-101800-]-
-// --- Code Writer: Cline SR
 // Ported from AGenUI core/src/module/agenui_thread_manager.cpp
 
 ThreadManager& ThreadManager::getInstance() {
@@ -82,6 +80,5 @@ IThread* ThreadManager::getMessageThread(int threadId) {
     }
     return it->second;
 }
-// --- AI-generated section End --[20260817-101800-]-
 
 } // namespace A2ui
