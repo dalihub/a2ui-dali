@@ -38,11 +38,11 @@ namespace A2ui {
  */
 class ShimmerEffect {
  public:
-  /// Base color: OneUI SurfaceContainer (dark) (#3A3A3D)
-  static constexpr uint32_t BASE_COLOR = 0x3A3A3D;
+  /// Base color: slightly dark gray (#E5E5EA), for the default light palettes
+  static constexpr uint32_t BASE_COLOR = 0xE5E5EA;
 
-  /// Highlight color: OneUI Outline (dark) — lighter for sweep band (#636368)
-  static constexpr uint32_t HIGHLIGHT_COLOR = 0x636368;
+  /// Highlight color: light (#F8F8FA)
+  static constexpr uint32_t HIGHLIGHT_COLOR = 0xF8F8FA;
 
   /// Shimmer loop duration in seconds
   static constexpr float SHIMMER_DURATION = 1.5f;

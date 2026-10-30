@@ -130,6 +130,9 @@ void MagicRevealEffect::BuildOverlay() {
   // Get the target's parent so we can add the container as a sibling.
   Actor targetParent = mTarget.GetParent();
   if (!targetParent) {
+    // Detached before the overlay could be built: nothing to reveal. Finish here
+    // so the target is released and IsActive() turns false.
+    Stop();
     return;
   }
 
