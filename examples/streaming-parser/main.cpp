@@ -17,10 +17,14 @@
 //
 //   ./a2ui-streaming-parser [path/to/messages.json]
 //
-// Reads an A2UI v0.9 JSON file (default: ../samples/login-form.json) and feeds
-// it in fixed-size chunks through StreamingContentParser, which extracts each
-// complete JSON object and dispatches it to an IStreamEventSink implementation
-// that prints the jsonData to stdout.
+// Reads an A2UI v0.9 JSON file (default: examples/samples/login-form.json, looked
+// up relative to the current directory and to the executable, so it works from
+// the repo root, build/ or bin/) and feeds it in fixed-size chunks through
+// StreamingContentParser, which extracts each message and dispatches it to an
+// IStreamEventSink implementation that prints the jsonData to stdout.
+//
+// The stream is fed twice: once as concatenated objects and once as JSONL
+// (one message per line), which is the usual wire format.
 //
 // The file reading and chunk-feeding work is posted to a worker thread managed
 // by ThreadManager, demonstrating the thread infrastructure ported from AGenUI.
@@ -31,13 +35,16 @@
 // re-deserializes the jsonData with nlohmann/json, checks that it is valid
 // JSON with the expected top-level key (e.g. "createSurface"), and asserts
 // key fields (version, surfaceId, components array, data model value).
-// After the stream ends, a summary of PASS/FAIL checks is printed.
+// After each pass the received events are compared with the source messages
+// (createSurface/deleteSurface counts, component ids). A summary of PASS/FAIL
+// checks is printed; the exit code is non-zero if the input cannot be read or
+// any check fails.
 //
 // StreamingContentParser expects a stream of *individual* A2UI event objects
 // (JSONL-style), not a top-level JSON array.  The sample files under
-// examples/samples/ are JSON arrays, so this example flattens the array into a
-// concatenation of its element objects before feeding it to the parser —
-// exactly how an A2UI transport would deliver the events.
+// examples/samples/ are JSON arrays, so this example flattens the array into its
+// element objects before feeding them to the parser — exactly how an A2UI
+// transport would deliver the events.
 //
 // Pipeline:
 //   StreamingContentParser -> ProtocolStreamExtractor -> IStreamEventSink
@@ -49,13 +56,17 @@
 
 #include <nlohmann/json.hpp>
 
+#include <unistd.h>
+
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <future>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
-#include <future>
 
 
 namespace
@@ -84,12 +95,31 @@ public:
     /// Total number of events received.
     int eventCount() const { return _eventCount; }
 
+    /// Per-pass bookkeeping used to compare the received events with the source.
+    int createCount = 0;
+    int deleteCount = 0;
+    std::set<std::string> componentIds;
+
+    void resetPass()
+    {
+        createCount = 0;
+        deleteCount = 0;
+        componentIds.clear();
+    }
+
+    /// Records a check performed outside a sink callback.
+    void check(bool ok, const std::string& eventName, const std::string& desc)
+    {
+        checkField(ok, eventName, desc);
+    }
+
     A2ui::AGenUIExeCode createSurface(const std::string& jsonData) override
     {
         ++_eventCount;
         std::cout << "=== createSurface ===" << std::endl;
         std::cout << jsonData << std::endl;
 
+        ++createCount;
         nlohmann::json j = parseOrFail(jsonData, "createSurface");
         if(j.is_null()) return A2ui::Execute_Success;
 
@@ -113,6 +143,7 @@ public:
         std::cout << "=== deleteSurface ===" << std::endl;
         std::cout << jsonData << std::endl;
 
+        ++deleteCount;
         nlohmann::json j = parseOrFail(jsonData, "deleteSurface");
         if(j.is_null()) return A2ui::Execute_Success;
 
@@ -161,6 +192,10 @@ public:
                     {
                         allValid = false;
                         break;
+                    }
+                    if(comp["id"].is_string())
+                    {
+                        componentIds.insert(comp["id"].get<std::string>());
                     }
                 }
                 checkField(allValid, "updateComponents",
@@ -261,31 +296,77 @@ bool ReadFile(const std::string& path, std::string& out)
     return true;
 }
 
-// Converts a JSON array file (e.g. examples/samples/*.json) into a stream of
-// individual JSON objects concatenated together.  StreamingContentParser
-// expects individual event objects, not a top-level array.  If the file is
-// already a single object or JSONL, it is returned unchanged.
-std::string FlattenJsonArrayToStream(const std::string& raw)
+// Splits a JSON array file (e.g. examples/samples/*.json) or a JSONL file into
+// its individual messages. Returns false if the content is neither.
+bool LoadMessages(const std::string& raw, std::vector<nlohmann::json>& out)
 {
-    try
+    nlohmann::json parsed = nlohmann::json::parse(raw, nullptr, false);
+    if(!parsed.is_discarded())
     {
-        auto parsed = nlohmann::json::parse(raw);
-        if(!parsed.is_array())
+        if(parsed.is_array())
         {
-            return raw;  // Already a single object or other form — feed as-is.
+            for(const auto& element : parsed)
+            {
+                out.push_back(element);
+            }
         }
-        std::string stream;
-        for(const auto& element : parsed)
+        else
         {
-            stream += element.dump();
+            out.push_back(parsed);
         }
-        return stream;
+        return !out.empty();
     }
-    catch(const std::exception& e)
+    std::istringstream lines(raw);
+    std::string line;
+    while(std::getline(lines, line))
     {
-        // Not valid JSON as a whole (e.g. JSONL) — feed the raw content.
-        return raw;
+        if(line.find_first_not_of(" \t\r") == std::string::npos)
+        {
+            continue;
+        }
+        nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
+        if(message.is_discarded())
+        {
+            return false;
+        }
+        out.push_back(message);
     }
+    return !out.empty();
+}
+
+// Returns the directory holding this executable ("" if unknown).
+std::string ExecutableDir()
+{
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if(n <= 0)
+    {
+        return "";
+    }
+    std::string path(buf, static_cast<std::size_t>(n));
+    std::size_t slash = path.find_last_of('/');
+    return (slash == std::string::npos) ? "" : path.substr(0, slash);
+}
+
+// Default input: examples/samples/login-form.json, from the repo root, build/, bin/,
+// or next to the installed data (samples/).
+std::string DefaultInputPath()
+{
+    const std::string rel = "examples/samples/login-form.json";
+    std::vector<std::string> candidates = {rel, "../" + rel};
+    std::string exeDir = ExecutableDir();
+    if(!exeDir.empty())
+    {
+        candidates.push_back(exeDir + "/../" + rel);
+    }
+    for(const auto& c : candidates)
+    {
+        if(std::ifstream(c).good())
+        {
+            return c;
+        }
+    }
+    return rel;
 }
 
 } // namespace
@@ -296,16 +377,45 @@ constexpr int kWorkerThreadId = 1;
 int main(int argc, char* argv[])
 {
     // Default sample ships with the repo; allow override via command line.
-    std::string jsonPath = "../samples/login-form.json";
-    if(argc > 1)
-    {
-        jsonPath = argv[1];
-    }
+    std::string jsonPath = (argc > 1) ? argv[1] : DefaultInputPath();
 
     std::cout << "Streaming parser example (ThreadManager)" << std::endl;
     std::cout << "Input file: " << jsonPath << std::endl;
     std::cout << "Chunk size: " << kChunkSize << " bytes" << std::endl;
     std::cout << std::string(60, '-') << std::endl;
+
+    std::string fileContent;
+    if(!ReadFile(jsonPath, fileContent))
+    {
+        return 1;
+    }
+    std::vector<nlohmann::json> messages;
+    if(!LoadMessages(fileContent, messages))
+    {
+        std::cerr << "Error: " << jsonPath << " is neither a JSON array of messages nor JSONL" << std::endl;
+        return 1;
+    }
+
+    // What the source contains, to compare with what the parser delivers.
+    int expectedCreates = 0;
+    int expectedDeletes = 0;
+    std::set<std::string> expectedIds;
+    std::string concatenated;
+    std::string jsonl;
+    for(const auto& m : messages)
+    {
+        if(m.contains("createSurface")) ++expectedCreates;
+        if(m.contains("deleteSurface")) ++expectedDeletes;
+        if(m.contains("updateComponents") && m["updateComponents"].contains("components"))
+        {
+            for(const auto& comp : m["updateComponents"]["components"])
+            {
+                if(comp.contains("id") && comp["id"].is_string()) expectedIds.insert(comp["id"].get<std::string>());
+            }
+        }
+        concatenated += m.dump();
+        jsonl += m.dump() + "\n";
+    }
 
     // 1. Create a worker thread via ThreadManager.
     auto& tm = A2ui::ThreadManager::getInstance();
@@ -336,66 +446,54 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // 3. Use a promise to signal completion from the worker thread.
-    std::promise<void> donePromise;
-    std::future<void> doneFuture = donePromise.get_future();
+    struct Pass { const char* label; const std::string* stream; };
+    const Pass passes[] = {{"concatenated objects", &concatenated}, {"JSONL", &jsonl}};
+    for(const auto& pass : passes)
+    {
+        std::cout << "=== Pass: " << pass.label << " (" << pass.stream->size() << " bytes) ===" << std::endl;
+        sink.resetPass();
 
-    // 4. Post the file-reading and chunk-feeding work to the worker thread.
-    workerThread->post([&]() {
-        std::cout << "[Worker] Loading JSON file: " << jsonPath << std::endl;
+        // 3. Use a promise to signal completion from the worker thread.
+        std::promise<void> donePromise;
+        std::future<void> doneFuture = donePromise.get_future();
 
-        // Read the JSON file.
-        std::string fileContent;
-        if(!ReadFile(jsonPath, fileContent))
-        {
-            std::cerr << "[Worker] Error: cannot read file" << std::endl;
+        // 4. Post the chunk-feeding work to the worker thread.
+        const std::string& streamContent = *pass.stream;
+        workerThread->post([&]() {
+            parser.processDataBeginning();
+
+            // Feed the content in fixed-size chunks to simulate fragmented arrival.
+            std::size_t offset = 0;
+            int chunkIndex = 0;
+            while(offset < streamContent.size())
+            {
+                std::size_t take = std::min(kChunkSize, streamContent.size() - offset);
+                parser.processDataAssembling(streamContent.substr(offset, take));
+                offset += take;
+                ++chunkIndex;
+            }
+            std::cout << "[Worker] Fed " << chunkIndex << " chunks" << std::endl;
+
+            parser.processDataEnding();
             donePromise.set_value();
-            return;
-        }
+        });
 
-        // Flatten a JSON array into a concatenation of individual event objects.
-        std::string streamContent = FlattenJsonArrayToStream(fileContent);
-        std::cout << "[Worker] File size: " << fileContent.size() << " bytes"
-                  << ", stream size: " << streamContent.size() << " bytes" << std::endl;
+        // 5. Main thread waits for the worker to finish.
+        doneFuture.get();
+
+        // 6. Compare what arrived with the source messages.
+        std::string tag = std::string("pass: ") + pass.label;
+        sink.check(sink.createCount == expectedCreates, tag,
+                   "createSurface events: " + std::to_string(sink.createCount) + " of " + std::to_string(expectedCreates));
+        sink.check(sink.deleteCount == expectedDeletes, tag,
+                   "deleteSurface events: " + std::to_string(sink.deleteCount) + " of " + std::to_string(expectedDeletes));
+        sink.check(sink.componentIds == expectedIds, tag,
+                   "component ids: " + std::to_string(sink.componentIds.size()) + " of " + std::to_string(expectedIds.size()));
         std::cout << std::string(60, '-') << std::endl;
+    }
 
-        // Begin the streaming session.
-        parser.processDataBeginning();
-
-        // Feed the content in fixed-size chunks to simulate fragmented arrival.
-        std::size_t offset = 0;
-        int chunkIndex = 0;
-        while(offset < streamContent.size())
-        {
-            std::size_t remaining = streamContent.size() - offset;
-            std::size_t take = (remaining < kChunkSize) ? remaining : kChunkSize;
-            std::string chunk = streamContent.substr(offset, take);
-            parser.processDataAssembling(chunk);
-            offset += take;
-            ++chunkIndex;
-        }
-        std::cout << std::string(60, '-') << std::endl;
-        std::cout << "[Worker] Fed " << chunkIndex << " chunks ("
-                  << streamContent.size() << " bytes total)" << std::endl;
-
-        // End the streaming session.
-        parser.processDataEnding();
-        std::cout << std::string(60, '-') << std::endl;
-
-        // Signal the main thread that work is done.
-        donePromise.set_value();
-    });
-
-    // 5. Main thread waits for the worker to finish.
-    std::cout << "[Main] Waiting for worker thread to finish..." << std::endl;
-    doneFuture.get();
-    std::cout << "[Main] Worker thread completed." << std::endl;
-    std::cout << std::string(60, '-') << std::endl;
-
-    // 6. Stop the parser.
+    // 7. Stop the parser and destroy the worker thread.
     parser.stop();
-
-    // 7. Destroy the worker thread.
     tm.destroyThread(kWorkerThreadId);
 
     // 8. Print verification summary on the main thread.
@@ -404,6 +502,11 @@ int main(int argc, char* argv[])
     for(const auto& c : sink.checks())
     {
         if(c.passed) ++passed; else ++failed;
+    }
+    if(sink.eventCount() == 0)
+    {
+        ++failed;
+        std::cout << "  No events were received" << std::endl;
     }
     std::cout << "Verification summary" << std::endl;
     std::cout << "  Events received: " << sink.eventCount() << std::endl;
