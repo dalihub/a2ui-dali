@@ -429,8 +429,8 @@ struct RendererRun
     std::map<std::string, std::string> out;
     for(const auto& s : surfaces)
     {
-      json j = json::parse(s.second->GetDataModel().Serialize(), nullptr, false);
-      out[s.first] = j.is_discarded() ? "<unparsable>" : j.dump();
+      // Compared verbatim: normalising through nlohmann would hide duplicate keys
+      out[s.first] = s.second->GetDataModel().Serialize();
     }
     return out;
   }
@@ -733,6 +733,12 @@ static void TestNullsAndUnusualKeys()
     R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"a":{"":1},"s/l":{"t~x":[1]},"7":{"q":"r"}}}})",
     R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/a","value":{"p":{"q":{"":"deep"}}}}})",
   });
+  // The renderer trims path segments, so " a" written per member would land on "a"
+  CheckScenario("keys with leading or trailing whitespace", {
+    kCreate,
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{" a":{"b":1,"c":[1,2]},"d ":{"e":2},"a":0}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/x","value":{"y":{" z ":[{"k":1}]},"w":1}}})",
+  });
 }
 
 // A malformed updateDataModel must not stall the stream: like the unsplit path it is passed
@@ -872,30 +878,42 @@ static void TestProgressiveDelivery()
   ReportTest("synthesized data model events keep version", count(ev, "updateDataModel", "\"version\":\"v0.9\"") == count(ev, "updateDataModel", ""));
 }
 
-// Total work must stay linear in the input: a 1 MB message in 64-byte chunks is parsed in a few
-// milliseconds; rescanning the buffer from the start on every chunk takes seconds.
+// Total work must stay linear in the input, also for tiny chunks (LLM token streams can deliver a
+// few bytes at a time): a 1 MB message in 16-byte chunks is parsed in tens of milliseconds, while
+// rescanning the pending bytes on every chunk takes many seconds.
 static void TestLinearTime()
 {
   std::cout << "\n=== Test: parsing time is linear in the input ===" << std::endl;
   const size_t n = 1024 * 1024;
+  const std::string big(n, 'a');
+  const std::string huge(4 * n, 'a'); // Where a rescan per chunk is cheaper per byte, use 4 MB
   std::string members;
   for(int i = 0; members.size() < n; ++i) members += (i ? ",\"k" : "\"k") + std::to_string(i) + "\":" + std::to_string(i);
+  const std::string dm = R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":)";
+  const std::string uc = R"({"version":"v0.9","updateComponents":{"surfaceId":"s","components":[)";
   struct Case { const char* name; std::string stream; };
   std::vector<Case> cases = {
-    {"updateDataModel without version (delivered whole)", R"({"updateDataModel":{"surfaceId":"s","path":"/","value":{)" + members + "}}}\n"},
-    {"streamed updateDataModel", R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"z":")" + std::string(n, 'a') + "\"}}}\n"},
-    {"createSurface", R"({"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":")" + std::string(n, 'c') + "\"}}\n"},
-    {"long Text component", R"({"version":"v0.9","updateComponents":{"surfaceId":"s","components":[{"id":"t","component":"Text","text":")" + std::string(n, 't') + "\"}]}}\n"},
-    {"long Image component", R"({"version":"v0.9","updateComponents":{"surfaceId":"s","components":[{"id":"i","component":"Image","url":")" + std::string(n, 'u') + "\"}]}}\n"},
+    {"1 MB updateDataModel without version (delivered whole)", R"({"updateDataModel":{"surfaceId":"s","path":"/","value":{)" + members + "}}}\n"},
+    {"1 MB streamed updateDataModel string", dm + R"({"z":")" + big + "\"}}}\n"},
+    {"1 MB updateDataModel huge key", dm + "{\"" + big + "\":1}}}\n"},
+    {"1 MB updateDataModel big member before value", R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","extra":")" + big + R"(","value":{"a":1}}})" "\n"},
+    {"1 MB big unknown member before the message key", R"({"meta":")" + big + R"(","version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"a":1}}})" "\n"},
+    {"1 MB big unknown member before updateComponents", R"({"meta":")" + big + R"(","version":"v0.9","updateComponents":{"surfaceId":"s","components":[{"id":"a","component":"Divider"}]}})" "\n"},
+    {"1 MB message without a known key", R"({"junk":")" + big + "\"}\n" + kCreate + "\n"},
+    {"1 MB createSurface", R"({"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":")" + big + "\"}}\n"},
+    {"1 MB long Text component", uc + R"({"id":"t","component":"Text","text":")" + big + "\"}]}}\n"},
+    {"4 MB member before a Text component's text", uc + R"({"id":"t","component":"Text","description":")" + huge + R"(","text":"x"}]}})" "\n"},
+    {"4 MB Markdown without content", uc + R"({"id":"m","component":"Markdown","text":")" + huge + "\"}]}}\n"},
+    {"1 MB long Image component", uc + R"({"id":"i","component":"Image","url":")" + big + "\"}]}}\n"},
   };
   for(const auto& c : cases)
   {
-    std::vector<std::string> chunks = Chunk(c.stream, 64);
+    std::vector<std::string> chunks = Chunk(c.stream, 16);
     auto t0 = std::chrono::steady_clock::now();
     std::vector<Event> events = RunChunks(chunks);
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    // Generous bound: linear parsing needs ~10 ms here, the quadratic version 4-13 s.
-    ReportTest(std::string("1 MB ") + c.name + " in 64 B chunks under 1 s (" + std::to_string(static_cast<int>(ms)) + " ms)",
+    // Generous bound: linear parsing needs well under 200 ms here, a rescan per chunk 5+ s.
+    ReportTest(std::string(c.name) + " in 16 B chunks under 1 s (" + std::to_string(static_cast<int>(ms)) + " ms)",
                ms < 1000.0 && !events.empty());
   }
 }

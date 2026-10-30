@@ -103,6 +103,13 @@ public:
     virtual void reset() = 0;
 
     /**
+     * @brief Called when the extractor drops bytes from the front of its buffer (a message was
+     * consumed or garbage discarded). Buffer positions passed in earlier calls are no longer
+     * valid; plugins must forget any per-position state. Collected binding paths stay.
+     */
+    virtual void onBufferConsumed() {}
+
+    /**
      * @brief Queries whether a given field path should be streamed incrementally.
      * Called by DM streaming when a string value is encountered, to decide whether
      * incremental delivery is needed (e.g., Markdown binding paths).

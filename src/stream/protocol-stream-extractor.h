@@ -155,6 +155,24 @@ private:
         bool complete = false;                 // Whether the whole value has arrived
     };
 
+    /**
+     * @brief Resumable scan of the members of one JSON object. Members are collected in order;
+     * the last one may still be incomplete (JsonMember::complete == false). A long key or value
+     * that arrives over many chunks is scanned only once in total.
+     */
+    struct MemberScan {
+        enum class Phase { BeforeKey, InKey, Colon, BeforeValue, InValue, Stopped, Closed, Error };
+        size_t objStart = std::string::npos;
+        size_t pos = 0;
+        Phase phase = Phase::BeforeKey;
+        std::vector<JsonMember> members;
+        size_t tokenStart = 0;   // Opening quote of the key being scanned
+        char valueKind = 0;      // '"', '{', '[' or 's' (scalar) for the value being scanned
+        bool escaped = false;    // String scan state for keys and string values
+        ScanState valueScan;     // Depth scan for object/array values
+        size_t closePos = 0;     // Valid in Phase::Closed
+    };
+
     // State-machine main loop (processes all complete events)
     void processAllCompleteEvents(std::vector<ParseResult>& outResults);
     // Streaming component extraction loop
@@ -174,6 +192,9 @@ private:
     bool scanObjectMembers(const std::string& buffer, size_t objStart,
                            std::vector<JsonMember>& outMembers, size_t& outClosePos,
                            const char* const* stopKeys = nullptr) const;
+    static void startMemberScan(MemberScan& scan, size_t objStart);
+    void advanceMemberScan(const std::string& buffer, MemberScan& scan, const char* const* stopKeys) const;
+    static EventType eventTypeOfMembers(const std::vector<JsonMember>& members);
     static bool advanceScan(const std::string& buffer, ScanState& state, char open, char close, size_t& outEndPos);
 
     // === DataModel streaming ===
@@ -181,7 +202,13 @@ private:
     void processStreamingDataModel(std::vector<ParseResult>& outResults);
     bool consumeDataModelValue(const std::string& path, size_t pos, bool isMember,
                                std::vector<ParseResult>& outResults);
-    bool scanStringValueEnd(size_t quotePos, size_t& outClosePos);
+    /// Resumable search for the closing quote of the JSON string opening at a given position.
+    struct StringScan {
+        size_t start = std::string::npos;
+        size_t pos = 0;
+        bool escaped = false;
+    };
+    bool scanStringValueEnd(StringScan& scan, size_t quotePos, size_t& outClosePos);
     void startWholeContainer();
     void enterInvalidDataModel(const char* reason);
     void finishDataModelMessage(std::vector<ParseResult>& outResults);
@@ -204,7 +231,6 @@ private:
     bool extractCompleteJsonValue(const std::string& buffer, size_t startPos, size_t& outEndPos) const;
     bool findClosingQuote(const std::string& buffer, size_t startPos, size_t& outEndPos) const;
     bool isValidClosingQuote(const std::string& buffer, size_t quotePos) const;
-    bool extractJsonStringAt(const std::string& buffer, size_t pos, std::string& outStr, size_t& outEndPos) const;
     bool rawStringValue(const std::string& buffer, const JsonMember& member, std::string& outRaw) const;
     const char* getEventTypeName(EventType type) const;
 
@@ -223,6 +249,8 @@ private:
     size_t _msgEnd = 0;
     EventType _msgType = EventType::Unknown;
     bool _msgWaitWhole = false;   // Cannot be streamed; deliver it once it is complete
+    MemberScan _msgMembers;       // Its top-level members, up to the first message key
+    MemberScan _payloadMembers;   // Members of its payload object, up to "components" / "value"
     IStreamPlugin* _plugin = nullptr;  // Optional streaming parse plugin
 
     // DataModel streaming state
@@ -239,9 +267,8 @@ private:
     size_t _dmWholeStart = 0;
     ScanState _dmWholeScan;
     bool _dmInvalid = false;      // Malformed value: pass the message through whole once it is complete
-    size_t _dmStringScanStart = std::string::npos; // Resumable scan of a pending (unstreamed) string
-    size_t _dmStringScanPos = 0;
-    bool _dmStringScanEscaped = false;
+    StringScan _dmKeyScan;        // Resumable scans of the pending key and (unstreamed) string value
+    StringScan _dmStringScan;
 
     // Field-level incremental streaming state for Markdown (embedded in DM streaming)
     bool _dmMarkdownStreaming = false;       // Whether a Markdown field is currently being streamed

@@ -74,6 +74,7 @@ public:
     bool isDataModelStreaming() const override;
 
     void reset() override;
+    void onBufferConsumed() override;
 
     bool shouldStreamField(const std::string& fieldPath) const override;
 

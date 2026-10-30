@@ -15,6 +15,7 @@
 
 #include "text-stream-plugin.h"
 #include "stream-logger.h"
+#include <cstring>
 #include <sstream>
 #include "nlohmann/json.hpp"
 
@@ -31,28 +32,47 @@ bool TextStreamPlugin::handleIncompleteComponent(
     const std::string& surfaceId, const std::string& version,
     std::vector<ProtocolStreamExtractor::ParseResult>& outResults) {
 
+    // Probing restarts for each new component and only searches bytes that arrived since the
+    // previous chunk, so a long member ahead of the text is not rescanned on every chunk
+    if (componentStartPos != _probeStart) {
+        _probeStart = componentStartPos;
+        _probeComponentFrom = _probeFieldFrom = _probeIdFrom = componentStartPos;
+        _probeRejected = false;
+    }
+    if (_probeRejected) {
+        return false;
+    }
+
     // Condition 1: "component":"Text" has appeared
-    if (!isPartialTextComponent(buffer, componentStartPos)) {
+    size_t componentKey = resumableFind(buffer, "\"component\"", _probeComponentFrom);
+    if (componentKey == std::string::npos || !isPartialTextComponent(buffer, componentKey)) {
         return false;
     }
 
     // Condition 2: "text":"... has appeared and the value string is not yet closed
-    size_t textStart = findInlineTextValueStart(buffer, componentStartPos);
+    size_t fieldKey = resumableFind(buffer, "\"text\"", _probeFieldFrom);
+    if (fieldKey == std::string::npos) {
+        return false;
+    }
+    size_t textStart = findInlineTextValueStart(buffer, fieldKey);
     if (textStart == std::string::npos) {
-        // "text" not found, not yet arrived, or is a data binding {"path":"..."}
+        // not yet arrived, or is a data binding {"path":"..."}
         return false;
     }
 
-    // Check whether the text value is already closed (no streaming needed if so)
+    // A text value that is already closed needs no streaming; the component is delivered whole
     size_t closePos = 0;
     if (isStringValueClosed(buffer, textStart, closePos)) {
-        // text value is complete; let the normal logic handle it
+        _probeRejected = true;
         return false;
     }
 
-    // Updates are addressed by id, so the id must already be known
-    std::string componentId = extractRawStringValue(buffer.substr(componentStartPos), "\"id\"");
+    // Updates are addressed by id, so the id must precede the text
+    size_t idKey = resumableFind(buffer, "\"id\"", _probeIdFrom);
+    std::string componentId = (idKey == std::string::npos || idKey > textStart)
+        ? std::string() : extractRawStringValue(buffer, "\"id\"", idKey);
     if (componentId.empty()) {
+        _probeRejected = true;
         return false;
     }
 
@@ -61,6 +81,7 @@ bool TextStreamPlugin::handleIncompleteComponent(
     size_t safeEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, textStart, buffer.length());
     std::string partialJson = buffer.substr(componentStartPos, safeEnd - componentStartPos) + "\"}";
     if (!nlohmann::json::accept(partialJson)) {
+        _probeRejected = true;
         return false;
     }
 
@@ -405,6 +426,8 @@ void TextStreamPlugin::reset() {
     _textValueStart = 0;
     _lastSentContentEnd = 0;
     _cachedComponentId.clear();
+    _probeStart = std::string::npos;
+    _probeRejected = false;
     _streamingEntries.clear();
     _textBindingPaths.clear();
 }
@@ -612,8 +635,8 @@ std::string TextStreamPlugin::extractStringValue(const std::string& buffer, cons
     return ""; // String not closed
 }
 
-size_t TextStreamPlugin::findStringValueStart(const std::string& buffer, const std::string& key) const {
-    size_t keyPos = buffer.find(key);
+size_t TextStreamPlugin::findStringValueStart(const std::string& buffer, const std::string& key, size_t from) const {
+    size_t keyPos = buffer.find(key, from);
     if (keyPos == std::string::npos) {
         return std::string::npos;
     }
@@ -639,10 +662,24 @@ size_t TextStreamPlugin::findStringValueStart(const std::string& buffer, const s
     return pos + 1;
 }
 
+size_t TextStreamPlugin::resumableFind(const std::string& buffer, const char* needle, size_t& from) {
+    // Same result as buffer.find(needle, start) when no match starts before `from`
+    size_t pos = buffer.find(needle, from);
+    if (pos != std::string::npos) {
+        from = pos;
+        return pos;
+    }
+    size_t keep = std::strlen(needle) - 1; // A match may still start in the last bytes
+    if (buffer.length() > keep && buffer.length() - keep > from) {
+        from = buffer.length() - keep;
+    }
+    return std::string::npos;
+}
+
 // MARK: - Incremental delivery helpers
 
-std::string TextStreamPlugin::extractRawStringValue(const std::string& buffer, const std::string& key) const {
-    size_t valueStart = findStringValueStart(buffer, key);
+std::string TextStreamPlugin::extractRawStringValue(const std::string& buffer, const std::string& key, size_t from) const {
+    size_t valueStart = findStringValueStart(buffer, key, from);
     if (valueStart == std::string::npos) {
         return "";
     }

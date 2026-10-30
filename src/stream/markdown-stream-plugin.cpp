@@ -15,6 +15,7 @@
 
 #include "markdown-stream-plugin.h"
 #include "stream-logger.h"
+#include <cstring>
 #include <sstream>
 #include "nlohmann/json.hpp"
 
@@ -31,28 +32,47 @@ bool MarkdownStreamPlugin::handleIncompleteComponent(
     const std::string& surfaceId, const std::string& version,
     std::vector<ProtocolStreamExtractor::ParseResult>& outResults) {
 
+    // Probing restarts for each new component and only searches bytes that arrived since the
+    // previous chunk, so a long member ahead of the content is not rescanned on every chunk
+    if (componentStartPos != _probeStart) {
+        _probeStart = componentStartPos;
+        _probeComponentFrom = _probeFieldFrom = _probeIdFrom = componentStartPos;
+        _probeRejected = false;
+    }
+    if (_probeRejected) {
+        return false;
+    }
+
     // Condition 1: "component":"Markdown" has appeared
-    if (!isPartialMarkdownComponent(buffer, componentStartPos)) {
+    size_t componentKey = resumableFind(buffer, "\"component\"", _probeComponentFrom);
+    if (componentKey == std::string::npos || !isPartialMarkdownComponent(buffer, componentKey)) {
         return false;
     }
 
     // Condition 2: "content":"... has appeared and the value string is not yet closed
-    size_t contentStart = findInlineContentValueStart(buffer, componentStartPos);
+    size_t fieldKey = resumableFind(buffer, "\"content\"", _probeFieldFrom);
+    if (fieldKey == std::string::npos) {
+        return false;
+    }
+    size_t contentStart = findInlineContentValueStart(buffer, fieldKey);
     if (contentStart == std::string::npos) {
-        // "content" not found, not yet arrived, or is a data binding {"path":"..."}
+        // not yet arrived, or is a data binding {"path":"..."}
         return false;
     }
 
-    // Check whether the content value is already closed (no streaming needed if so)
+    // A content value that is already closed needs no streaming; the component is delivered whole
     size_t closePos = 0;
     if (isStringValueClosed(buffer, contentStart, closePos)) {
-        // content value is complete; let the normal logic handle it
+        _probeRejected = true;
         return false;
     }
 
-    // Updates are addressed by id, so the id must already be known
-    std::string componentId = extractRawStringValue(buffer.substr(componentStartPos), "\"id\"");
+    // Updates are addressed by id, so the id must precede the content
+    size_t idKey = resumableFind(buffer, "\"id\"", _probeIdFrom);
+    std::string componentId = (idKey == std::string::npos || idKey > contentStart)
+        ? std::string() : extractRawStringValue(buffer, "\"id\"", idKey);
     if (componentId.empty()) {
+        _probeRejected = true;
         return false;
     }
 
@@ -61,6 +81,7 @@ bool MarkdownStreamPlugin::handleIncompleteComponent(
     size_t safeEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, contentStart, buffer.length());
     std::string partialJson = buffer.substr(componentStartPos, safeEnd - componentStartPos) + "\"}";
     if (!nlohmann::json::accept(partialJson)) {
+        _probeRejected = true;
         return false;
     }
 
@@ -402,6 +423,8 @@ void MarkdownStreamPlugin::reset() {
     _contentValueStart = 0;
     _lastSentContentEnd = 0;
     _cachedComponentId.clear();
+    _probeStart = std::string::npos;
+    _probeRejected = false;
     _streamingEntries.clear();
     _markdownBindingPaths.clear();
 }
@@ -580,8 +603,8 @@ std::string MarkdownStreamPlugin::extractStringValue(const std::string& buffer, 
     return ""; // String not closed
 }
 
-size_t MarkdownStreamPlugin::findStringValueStart(const std::string& buffer, const std::string& key) const {
-    size_t keyPos = buffer.find(key);
+size_t MarkdownStreamPlugin::findStringValueStart(const std::string& buffer, const std::string& key, size_t from) const {
+    size_t keyPos = buffer.find(key, from);
     if (keyPos == std::string::npos) {
         return std::string::npos;
     }
@@ -607,10 +630,24 @@ size_t MarkdownStreamPlugin::findStringValueStart(const std::string& buffer, con
     return pos + 1; // Return position after the opening "
 }
 
+size_t MarkdownStreamPlugin::resumableFind(const std::string& buffer, const char* needle, size_t& from) {
+    // Same result as buffer.find(needle, start) when no match starts before `from`
+    size_t pos = buffer.find(needle, from);
+    if (pos != std::string::npos) {
+        from = pos;
+        return pos;
+    }
+    size_t keep = std::strlen(needle) - 1; // A match may still start in the last bytes
+    if (buffer.length() > keep && buffer.length() - keep > from) {
+        from = buffer.length() - keep;
+    }
+    return std::string::npos;
+}
+
 // MARK: - Incremental delivery helpers
 
-std::string MarkdownStreamPlugin::extractRawStringValue(const std::string& buffer, const std::string& key) const {
-    size_t valueStart = findStringValueStart(buffer, key);
+std::string MarkdownStreamPlugin::extractRawStringValue(const std::string& buffer, const std::string& key, size_t from) const {
+    size_t valueStart = findStringValueStart(buffer, key, from);
     if (valueStart == std::string::npos) {
         return "";
     }

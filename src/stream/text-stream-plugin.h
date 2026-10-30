@@ -83,6 +83,7 @@ public:
     bool isDataModelStreaming() const override { return _isDataModelStreaming; }
 
     void reset() override;
+    void onBufferConsumed() override { _probeStart = std::string::npos; }
 
     bool shouldStreamField(const std::string& fieldPath) const override;
 
@@ -106,12 +107,15 @@ private:
     std::string extractStringValue(const std::string& buffer, const std::string& key, bool strictScope = false) const;
 
     /// Finds the start position of the string value for the given key (after "key":").
-    size_t findStringValueStart(const std::string& buffer, const std::string& key) const;
+    size_t findStringValueStart(const std::string& buffer, const std::string& key, size_t from = 0) const;
 
     // ---- Incremental delivery helpers ----
 
     /// Extracts the raw JSON-encoded content of the string value for key (without unescaping), safe to embed in new JSON.
-    std::string extractRawStringValue(const std::string& buffer, const std::string& key) const;
+    std::string extractRawStringValue(const std::string& buffer, const std::string& key, size_t from = 0) const;
+
+    /// buffer.find(needle, from) that advances `from` past bytes already known not to match.
+    static size_t resumableFind(const std::string& buffer, const char* needle, size_t& from);
 
     /// Extracts the incremental content from buffer[fromPos, toPos); when toPos==npos reads to end and handles trailing odd backslash.
     std::string extractDelta(const std::string& buffer, size_t fromPos, size_t toPos) const;
@@ -157,6 +161,13 @@ private:
     size_t _textValueStart = 0;           // Start position of the text value
     size_t _lastSentContentEnd = 0;       // Buffer end position of the last sent content
     std::string _cachedComponentId;       // Cached component id during streaming (raw JSON-encoded)
+
+    // Probing state for the incomplete component at _probeStart (handleIncompleteComponent)
+    size_t _probeStart = std::string::npos;
+    size_t _probeComponentFrom = 0;
+    size_t _probeFieldFrom = 0;
+    size_t _probeIdFrom = 0;
+    bool _probeRejected = false;          // This component will not be streamed
 
     // ---- DataModel streaming state ----
     bool _isDataModelStreaming = false;

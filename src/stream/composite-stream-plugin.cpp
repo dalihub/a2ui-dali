@@ -120,6 +120,12 @@ void CompositeStreamPlugin::reset() {
     }
 }
 
+void CompositeStreamPlugin::onBufferConsumed() {
+    for (auto* plugin : _plugins) {
+        plugin->onBufferConsumed();
+    }
+}
+
 bool CompositeStreamPlugin::shouldStreamField(const std::string& fieldPath) const {
     // OR logic: return true if any sub-plugin needs streaming.
     // Markdown uses exact matching; Text uses suffix matching — they are mutually exclusive.
