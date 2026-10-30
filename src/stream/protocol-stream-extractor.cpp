@@ -86,6 +86,14 @@ bool isScalarPrefix(const std::string& buffer, size_t pos) {
     return true;
 }
 
+// Containers nested deeper than this are not split member by member but sent whole once
+// complete (like a container holding a null). Every per-member event repeats the full path of its
+// container, so without a cap a pathologically deep value (e.g. 100k levels in 1 MB) produces
+// output quadratic in its depth (27 GB for 1 MB). A2UI data models are a few levels deep (the
+// deepest value in the repo's sample and e2e streams has 5 levels), so 32 leaves ample room and
+// bounds the per-member output to a small multiple of the input.
+constexpr size_t kMaxStreamedDepth = 32;
+
 // Keys that cannot be addressed member by member with the renderer's JSON-pointer writes:
 // "" (would address the parent), '/' and '~' (not decoded by the renderer), all-digit keys
 // (a fresh renderer model turns them into array indices), keys with leading or trailing
@@ -1315,6 +1323,16 @@ bool ProtocolStreamExtractor::consumeDataModelValue(const std::string& path, siz
         if (emitDataModelUpdate(path, _dataBuffer.substr(pos, closePos - pos + 1), outResults)) {
             _dmParsePosition = closePos + 1;
         }
+        return true;
+    }
+
+    if ((c == '{' || c == '[') && _dmStack.size() >= kMaxStreamedDepth) {
+        // Too deep to split: send this container whole at its path once it is complete
+        _dmWholePending = true;
+        _dmWholePath = path;
+        _dmWholeStart = pos;
+        _dmWholeScan = ScanState();
+        _dmWholeScan.pos = pos;
         return true;
     }
 

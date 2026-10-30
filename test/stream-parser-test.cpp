@@ -741,6 +741,61 @@ static void TestNullsAndUnusualKeys()
   });
 }
 
+static std::string Nested(size_t depth, const std::string& leaf)
+{
+  std::string v;
+  v.reserve(depth * 7 + leaf.size());
+  for(size_t i = 0; i < depth; ++i) v += (i % 2) ? "[" : "{\"a\":";
+  v += leaf;
+  for(size_t i = depth; i-- > 0;) v += (i % 2) ? "]" : "}";
+  return v;
+}
+
+// Containers deeper than the streaming depth cap are sent whole, so output stays linear even
+// for absurdly deep values, and nothing in the scan path recurses.
+static void TestDeepNesting()
+{
+  std::cout << "\n=== Test: deeply nested data model values ===" << std::endl;
+  CheckScenario("nesting beyond the streaming depth cap", {
+    kCreate,
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"deep":)" + Nested(40, "\"x\"") +
+      R"(,"after":1,"deeper":)" + Nested(70, "[1,2]") + "}}}",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/deep","value":)" + Nested(35, "{}") + "}}",
+  });
+
+  // Deep, but still within what the renderer's own JSON parser handles unsplit
+  {
+    std::string msg = R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"d":)" + Nested(5000, "7") + "}}}";
+    Model want = ModelFromSource({kCreate, msg});
+    std::string stream = kCreate + "\n" + msg + "\n";
+    std::string err = want.error.empty() ? CompareModels(want, ModelFromEvents(RunChunks(Chunk(stream, 16)))) : want.error;
+    ReportTest("5000 levels in 16 B chunks, same renderer data model as unsplit", err.empty(), err);
+    err = want.error.empty() ? CompareModels(want, ModelFromEvents(RunChunks(Chunk(stream, 1)))) : want.error;
+    ReportTest("5000 levels byte by byte, same renderer data model as unsplit", err.empty(), err);
+  }
+
+  // Far deeper than any parser here builds a tree for (the renderer itself cannot load this
+  // unsplit): only time, output size and event validity are checked
+  {
+    std::string stream = kCreate + "\n" + R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"d":)" +
+                         Nested(100000, "7") + "}}}\n";
+    auto t0 = std::chrono::steady_clock::now();
+    std::vector<Event> events = RunChunks(Chunk(stream, 16));
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    size_t outBytes = 0;
+    bool valid = true;
+    for(const auto& e : events)
+    {
+      outBytes += e.data.size();
+      valid = valid && json::accept(e.data);
+    }
+    ReportTest("100000 levels in 16 B chunks under 1 s (" + std::to_string(static_cast<int>(ms)) + " ms)", ms < 1000.0);
+    ReportTest("100000 levels: output " + std::to_string(outBytes) + " B for " + std::to_string(stream.size()) +
+                 " B input (at most 2x + 64 KB), all events valid",
+               valid && outBytes <= 2 * stream.size() + 65536);
+  }
+}
+
 // A malformed updateDataModel must not stall the stream: like the unsplit path it is passed
 // through as received, and the messages after it still arrive.
 static void TestMalformedValue()
@@ -1052,6 +1107,7 @@ int main(int argc, char** argv)
   TestProgressiveDelivery();
   TestNullsAndUnusualKeys();
   TestMalformedValue();
+  TestDeepNesting();
   TestLinearTime();
   TestRepoSamples(root);
 
