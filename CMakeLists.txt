@@ -246,7 +246,6 @@ SET_TARGET_PROPERTIES(a2ui-streaming-parser PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
 )
 
-
 # ============================================================
 # Install: example binaries + runtime data (Tizen/gbs packaging)
 # ============================================================
@@ -256,9 +255,10 @@ SET_TARGET_PROPERTIES(a2ui-streaming-parser PROPERTIES
 #   cd ${CMAKE_INSTALL_DATADIR}/a2ui-dali && a2ui-gallery-demo screens
 OPTION(A2UI_INSTALL_EXAMPLES "Install example binaries and runtime resources" ON)
 IF(A2UI_INSTALL_EXAMPLES)
-  INSTALL(TARGETS a2ui-basic-renderer a2ui-gallery-demo a2ui-custom-component a2ui-streaming-parser
+  # a2ui-streaming-parser is a developer example and is deliberately not installed
+  # (packaging/a2ui-dali.spec does not ship it).
+  INSTALL(TARGETS a2ui-basic-renderer a2ui-gallery-demo a2ui-custom-component
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-
 
   INSTALL(DIRECTORY res/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/a2ui-dali/res)
