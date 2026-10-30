@@ -98,9 +98,6 @@ private:
     /// Checks whether the string value starting at valueStart is closed (unescaped ").
     bool isStringValueClosed(const std::string& buffer, size_t valueStart, size_t& closePos) const;
 
-    /// Builds a partial JSON from startPos to end of buffer, handling trailing escapes, then appends suffix.
-    std::string constructPartialJson(const std::string& data, size_t startPos, const std::string& suffix) const;
-
     /// Parses a complete component JSON and records the binding path if it is a Markdown data binding.
     void collectBindingPath(const std::string& componentJson);
 

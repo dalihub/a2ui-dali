@@ -179,6 +179,21 @@ SET_TARGET_PROPERTIES(${TEST_NAME} PROPERTIES
 )
 
 # ============================================================
+# Stream parser test: src/stream only, no DALi / no display
+# ============================================================
+ADD_EXECUTABLE(a2ui-stream-parser-test
+  test/stream-parser-test.cpp
+  ${A2UI_STREAM_SOURCES}
+)
+TARGET_INCLUDE_DIRECTORIES(a2ui-stream-parser-test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party
+)
+SET_TARGET_PROPERTIES(a2ui-stream-parser-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+)
+
+# ============================================================
 # Streaming render test: drives the real renderer, needs a display
 # (run via tools/run-tests.sh, which wraps it in Xvfb)
 # ============================================================

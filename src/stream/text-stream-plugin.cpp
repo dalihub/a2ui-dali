@@ -50,38 +50,34 @@ bool TextStreamPlugin::handleIncompleteComponent(
         return false;
     }
 
+    // Updates are addressed by id, so the id must already be known
+    std::string componentId = extractRawStringValue(buffer.substr(componentStartPos), "\"id\"");
+    if (componentId.empty()) {
+        return false;
+    }
+
+    // First partial component: everything up to a safe cut inside the text value, closed with "}.
+    // Reject it when that is not valid JSON (e.g. "text" is not a top-level member).
+    size_t safeEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, textStart, buffer.length());
+    std::string partialJson = buffer.substr(componentStartPos, safeEnd - componentStartPos) + "\"}";
+    if (!nlohmann::json::accept(partialJson)) {
+        return false;
+    }
+
     // Enter Text component streaming mode
     _isComponentStreaming = true;
     _componentStart = componentStartPos;
     _textValueStart = textStart;
+    _cachedComponentId = componentId;
 
-    // Cache the component id (raw JSON-encoded)
-    _cachedComponentId = extractRawStringValue(buffer.substr(_componentStart), "\"id\"");
+    ProtocolStreamExtractor::ParseResult result;
+    result.type = ProtocolStreamExtractor::ParseResult::Type::ComponentUpdate;
+    result.componentJson = partialJson;
+    result.surfaceId = surfaceId;
+    result.version = version;
+    outResults.emplace_back(std::move(result));
 
-    // Deliver the first partial content immediately (using the text field)
-    std::string partialJson = constructPartialJson(buffer, _componentStart, "\"}");
-    if (!partialJson.empty()) {
-        ProtocolStreamExtractor::ParseResult result;
-        result.type = ProtocolStreamExtractor::ParseResult::Type::ComponentUpdate;
-        result.componentJson = partialJson;
-        result.surfaceId = surfaceId;
-        result.version = version;
-        outResults.emplace_back(std::move(result));
-    }
-
-    // Compute the end position of the sent content (accounting for trailing backslash trimming)
-    size_t trailingBackslashes = 0;
-    for (size_t i = buffer.length(); i > _textValueStart; ) {
-        i--;
-        if (buffer[i] == '\\') {
-            trailingBackslashes++;
-        } else {
-            break;
-        }
-    }
-    _lastSentContentEnd = (trailingBackslashes % 2 != 0)
-        ? buffer.length() - 1
-        : buffer.length();
+    _lastSentContentEnd = safeEnd;
 
     return true; // Plugin takes over
 }
@@ -99,22 +95,14 @@ bool TextStreamPlugin::continueComponentStreaming(
         std::string component = buffer.substr(_componentStart, endPos - _componentStart + 1);
         collectBindingPath(component);
 
-        // Cache post-text attributes (e.g., "styles") for textChunk JSON
-        cacheExtraFieldsFromComponent(component);
-
-        // Extract the text close position and compute the final delta
-        size_t closePos = 0;
-        if (isStringValueClosed(buffer, _textValueStart, closePos)) {
-            std::string delta = extractDelta(buffer, _lastSentContentEnd, closePos);
-            if (!delta.empty()) {
-                ProtocolStreamExtractor::ParseResult result;
-                result.type = ProtocolStreamExtractor::ParseResult::Type::ComponentUpdate;
-                result.componentJson = buildAppendTextChunkJson(delta);
-                result.surfaceId = surfaceId;
-                result.version = version;
-                outResults.emplace_back(std::move(result));
-            }
-        }
+        // Send the complete component last. It replaces the partial one, so the final text and
+        // any members after it (e.g. "variant") are exact regardless of how the stream was split.
+        ProtocolStreamExtractor::ParseResult result;
+        result.type = ProtocolStreamExtractor::ParseResult::Type::ComponentUpdate;
+        result.componentJson = component;
+        result.surfaceId = surfaceId;
+        result.version = version;
+        outResults.emplace_back(std::move(result));
 
         outParsePosition = endPos + 1;
         _isComponentStreaming = false;
@@ -155,18 +143,7 @@ bool TextStreamPlugin::continueComponentStreaming(
     outResults.emplace_back(std::move(result));
 
     // Update the sent position
-    size_t trailingBackslashes = 0;
-    for (size_t i = buffer.length(); i > _lastSentContentEnd; ) {
-        i--;
-        if (buffer[i] == '\\') {
-            trailingBackslashes++;
-        } else {
-            break;
-        }
-    }
-    _lastSentContentEnd = (trailingBackslashes % 2 != 0)
-        ? buffer.length() - 1
-        : buffer.length();
+    _lastSentContentEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, _lastSentContentEnd, buffer.length());
 
     return true; // Still streaming
 }
@@ -249,18 +226,7 @@ bool TextStreamPlugin::handleIncompleteDataModel(
         }
 
         // Compute the end position of the sent leaf value
-        size_t trailingBackslashes = 0;
-        for (size_t i = buffer.length(); i > entry.leafValueStart; ) {
-            i--;
-            if (buffer[i] == '\\') {
-                trailingBackslashes++;
-            } else {
-                break;
-            }
-        }
-        entry.lastSentEnd = (trailingBackslashes % 2 != 0)
-            ? buffer.length() - 1
-            : buffer.length();
+        entry.lastSentEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, entry.leafValueStart, buffer.length());
     }
 
     return true; // Plugin takes over
@@ -348,18 +314,7 @@ bool TextStreamPlugin::continueDataModelStreaming(
         } else {
             delta = extractDelta(buffer, entry.lastSentEnd, std::string::npos);
             if (!delta.empty()) {
-                size_t trailingBackslashes = 0;
-                for (size_t i = buffer.length(); i > entry.lastSentEnd; ) {
-                    i--;
-                    if (buffer[i] == '\\') {
-                        trailingBackslashes++;
-                    } else {
-                        break;
-                    }
-                }
-                entry.lastSentEnd = (trailingBackslashes % 2 != 0)
-                    ? buffer.length() - 1
-                    : buffer.length();
+                entry.lastSentEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, entry.lastSentEnd, buffer.length());
             }
         }
 
@@ -417,15 +372,7 @@ bool TextStreamPlugin::continueDataModelStreaming(
                 newEntry.lastSentEnd = closePos;
             } else {
                 leafContent = extractDelta(buffer, leafStart, std::string::npos);
-                size_t trailingBackslashes = 0;
-                for (size_t i = buffer.length(); i > leafStart; ) {
-                    i--;
-                    if (buffer[i] == '\\') { trailingBackslashes++; }
-                    else { break; }
-                }
-                newEntry.lastSentEnd = (trailingBackslashes % 2 != 0)
-                    ? buffer.length() - 1
-                    : buffer.length();
+                newEntry.lastSentEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, leafStart, buffer.length());
             }
 
             if (!leafContent.empty() || leafClosed) {
@@ -454,7 +401,6 @@ void TextStreamPlugin::reset() {
     _textValueStart = 0;
     _lastSentContentEnd = 0;
     _cachedComponentId.clear();
-    _cachedExtraFields.clear();
     _streamingEntries.clear();
     _textBindingPaths.clear();
 }
@@ -554,27 +500,6 @@ bool TextStreamPlugin::isStringValueClosed(const std::string& buffer, size_t val
     }
 
     return false;
-}
-
-std::string TextStreamPlugin::constructPartialJson(
-    const std::string& data, size_t startPos, const std::string& suffix) const {
-    if (startPos >= data.length()) {
-        return "";
-    }
-
-    std::string partial = data.substr(startPos);
-
-    // Handle incomplete trailing escape: if the string ends with an odd number of \, remove the last one
-    size_t trailingBackslashes = 0;
-    for (auto it = partial.rbegin(); it != partial.rend() && *it == '\\'; ++it) {
-        trailingBackslashes++;
-    }
-    if (trailingBackslashes % 2 != 0) {
-        partial.pop_back();
-    }
-
-    partial += suffix;
-    return partial;
 }
 
 void TextStreamPlugin::collectBindingPath(const std::string& componentJson) {
@@ -733,15 +658,9 @@ std::string TextStreamPlugin::extractDelta(const std::string& buffer, size_t fro
 
     std::string delta;
     if (toPos == std::string::npos || toPos > buffer.length()) {
-        // Open-ended: read to end of buffer, handle trailing odd backslash
-        delta = buffer.substr(fromPos);
-        size_t trailingBackslashes = 0;
-        for (auto it = delta.rbegin(); it != delta.rend() && *it == '\\'; ++it) {
-            trailingBackslashes++;
-        }
-        if (trailingBackslashes % 2 != 0) {
-            delta.pop_back();
-        }
+        // Open-ended: read up to a cut that does not split an escape or UTF-8 sequence
+        size_t safeEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, fromPos, buffer.length());
+        delta = buffer.substr(fromPos, safeEnd - fromPos);
     } else {
         // Closed range: exact bounds
         if (toPos <= fromPos) {
@@ -759,33 +678,8 @@ std::string TextStreamPlugin::buildAppendTextChunkJson(const std::string& delta)
     json += "\",\"component\":\"Text\",\"textChunk\":\"";
     json += delta;
     json += "\"";
-    if (!_cachedExtraFields.empty()) {
-        json += ",";
-        json += _cachedExtraFields;
-    }
     json += "}";
     return json;
-}
-
-void TextStreamPlugin::cacheExtraFieldsFromComponent(const std::string& componentJson) {
-    _cachedExtraFields.clear();
-    auto obj = nlohmann::json::parse(componentJson, nullptr, false);
-    if (obj.is_discarded() || !obj.is_object()) {
-        return;
-    }
-    // Skip id/component/text/textChunk — already handled by buildAppendTextChunkJson
-    bool first = true;
-    for (auto it = obj.begin(); it != obj.end(); ++it) {
-        const auto& key = it.key();
-        if (key == "id" || key == "component" || key == "text" || key == "textChunk") {
-            continue;
-        }
-        if (!first) {
-            _cachedExtraFields += ",";
-        }
-        _cachedExtraFields += "\"" + key + "\":" + it.value().dump();
-        first = false;
-    }
 }
 
 // MARK: - DataModel nested path helpers
@@ -937,7 +831,9 @@ std::string TextStreamPlugin::buildDataModelEventJson(
     nlohmann::json eventObj;
     eventObj["surfaceId"] = entry.surfaceId;
     eventObj["path"] = entry.bindingPath;
-    eventObj["value"] = delta;
+    // delta is raw JSON string content (still escaped); store the decoded text
+    nlohmann::json decoded = nlohmann::json::parse("\"" + delta + "\"", nullptr, false);
+    eventObj["value"] = decoded.is_string() ? decoded : nlohmann::json(delta);
 
     nlohmann::json resultObj;
     resultObj[eventKey] = eventObj;

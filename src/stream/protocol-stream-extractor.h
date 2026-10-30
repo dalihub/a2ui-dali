@@ -96,11 +96,21 @@ public:
     static bool isJsonObjectComplete(const std::string& json, size_t startPos, size_t& endPos);
 
     /**
-     * @brief Detects the event type in JSON data.
+     * @brief Detects the event type of a (possibly partial) message from its top-level key.
+     * Only the members of the outermost object are inspected, so a value that merely
+     * mentions another message name (e.g. "value":"createSurface") does not change the type.
      * @param data JSON data.
-     * @return Event type.
+     * @return Event type, or Unknown when no known top-level key has arrived yet.
      */
     EventType detectEventType(const std::string& data) const;
+
+    /**
+     * @brief Returns the largest position <= endPos at which the JSON string content that
+     * starts at fromPos can be cut without splitting an escape sequence (\x, \uXXXX, a
+     * \uD800-\uDBFF high surrogate and its low half) or a raw UTF-8 multi-byte sequence.
+     * fromPos must itself be such a boundary (e.g. right after the opening quote).
+     */
+    static size_t findSafeStringCut(const std::string& buffer, size_t fromPos, size_t endPos);
 
 private:
     enum class StreamState {
@@ -123,56 +133,76 @@ private:
             : type(t), pathPrefix(path), arrayIndex(idx) {}
     };
 
+    /**
+     * @brief One member of a JSON object as seen by scanObjectMembers().
+     */
+    struct JsonMember {
+        std::string key;                       // Raw (still JSON-escaped) key text
+        size_t valueStart = std::string::npos; // First byte of the value; npos if not arrived yet
+        size_t valueEnd = 0;                   // Last byte of the value; valid when complete
+        bool complete = false;                 // Whether the whole value has arrived
+    };
+
     // State-machine main loop (processes all complete events)
     void processAllCompleteEvents(std::vector<ParseResult>& outResults);
     // Streaming component extraction loop
     void processStreamingData(std::vector<ParseResult>& outResults);
     // Initializes updateComponents streaming (extracts surfaceId/version, locates components array)
-    bool startStreamingComponents();
+    bool startStreamingComponents(bool messageComplete);
+    // Consumes the rest of an updateComponents message once its components array is closed
+    void finishComponentsMessage();
+
+    // === Message framing ===
+    void discardUntilMessageStart();
+    void consumeMessage(size_t endPos);
+    void abandonMessageIfComplete(const char* reason);
+    EventType detectEventTypeAt(const std::string& data, size_t objStart) const;
+    bool scanObjectMembers(const std::string& buffer, size_t objStart,
+                           std::vector<JsonMember>& outMembers, size_t& outClosePos) const;
+    static bool findObjectEnd(const std::string& buffer, size_t fromPos, int depth, size_t& outEndPos);
 
     // === DataModel streaming ===
     bool startStreamingDataModel();
     void processStreamingDataModel(std::vector<ParseResult>& outResults);
-    void handleDataModelComplete(std::vector<ParseResult>& outResults);
-    void emitDataModelUpdate(const std::string& surfaceId, const std::string& path,
-                             const std::string& rawValue, std::vector<ParseResult>& outResults);
+    bool consumeDataModelValue(const std::string& path, size_t pos, std::vector<ParseResult>& outResults);
+    void finishDataModelMessage();
+    void emitDataModelUpdate(const std::string& path, const std::string& rawValue,
+                             std::vector<ParseResult>& outResults);
+    std::string buildDataModelEventJson(const char* eventKey, const std::string& path,
+                                        const std::string& rawValue) const;
     void resetDataModelStreamState();
 
     // === Field-level incremental streaming for Markdown (sub-process embedded in DM streaming) ===
     void startMarkdownFieldStreaming(const std::string& fieldPath, size_t valueQuotePos,
                                       std::vector<ParseResult>& outResults);
     bool continueMarkdownFieldStreaming(std::vector<ParseResult>& outResults);
-    void emitAppendDataModel(const std::string& surfaceId, const std::string& path,
-                              const std::string& delta, std::vector<ParseResult>& outResults);
-    size_t computeSafeEnd(size_t fromPos) const;
+    void emitAppendDataModel(const std::string& path, const std::string& delta,
+                             std::vector<ParseResult>& outResults);
 
     // JSON parsing low-level methods
     bool extractNextComponent(std::string& outComponent);
-    bool isUpdateComponentsComplete();
     bool isJsonArrayComplete(const std::string& json, size_t startPos, size_t& endPos) const;
-    bool isCompleteJson(const std::string& json) const;
     bool extractCompleteJsonValue(const std::string& buffer, size_t startPos, size_t& outEndPos) const;
     bool findClosingQuote(const std::string& buffer, size_t startPos, size_t& outEndPos) const;
     bool isValidClosingQuote(const std::string& buffer, size_t quotePos) const;
-    std::string removeInnerQuotes(const std::string& str) const;
     bool extractJsonStringAt(const std::string& buffer, size_t pos, std::string& outStr, size_t& outEndPos) const;
-    std::string extractSurfaceId(const std::string& data) const;
-    std::string extractVersion(const std::string& data) const;
-    std::string extractStringField(const std::string& data, const std::string& fieldName) const;
-    size_t findComponentsArrayStart(const std::string& data) const;
-    bool isDataModelEventComplete();
+    bool rawStringValue(const std::string& buffer, const JsonMember& member, std::string& outRaw) const;
     const char* getEventTypeName(EventType type) const;
 
-    std::string _dataBuffer;
+    std::string _dataBuffer;      // Starts at the current message's '{' while streaming
     size_t _parsePosition = 0;
-    std::string _surfaceId;
-    std::string _version;
+    std::string _surfaceId;       // Raw (JSON-escaped) surfaceId of the streamed updateComponents
+    std::string _version;         // Raw (JSON-escaped) version of the streamed updateComponents
+    bool _componentsArrayClosed = false;
     StreamState _streamState = StreamState::Idle;
     IStreamPlugin* _plugin = nullptr;  // Optional streaming parse plugin
 
     // DataModel streaming state
-    std::string _dmSurfaceId;
-    std::string _dmBasePath;
+    std::string _dmSurfaceId;     // Decoded surfaceId
+    std::string _dmBasePath;      // Decoded "path" of the message
+    std::string _dmVersion;       // Decoded top-level "version"
+    bool _dmHasVersion = false;
+    bool _dmValuePending = false; // The top-level "value" has not been consumed yet
     size_t _dmParsePosition = 0;
     size_t _dmValueStart = 0;
     std::vector<DmStackEntry> _dmStack;
@@ -182,7 +212,6 @@ private:
     std::string _dmMarkdownFieldPath;        // Full path of the field being streamed
     size_t _dmMarkdownValueStart = 0;        // Start position of the string value content (after opening ")
     size_t _dmMarkdownLastSentEnd = 0;       // End position of the last sent content
-    bool _dmMarkdownFirstSent = false;       // Whether the first updateDataModel has been sent
 };
 
 } // namespace A2ui

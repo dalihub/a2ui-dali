@@ -50,38 +50,34 @@ bool MarkdownStreamPlugin::handleIncompleteComponent(
         return false;
     }
 
+    // Updates are addressed by id, so the id must already be known
+    std::string componentId = extractRawStringValue(buffer.substr(componentStartPos), "\"id\"");
+    if (componentId.empty()) {
+        return false;
+    }
+
+    // First partial component: everything up to a safe cut inside the content value, closed with "}.
+    // Reject it when that is not valid JSON (e.g. "content" is not a top-level member).
+    size_t safeEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, contentStart, buffer.length());
+    std::string partialJson = buffer.substr(componentStartPos, safeEnd - componentStartPos) + "\"}";
+    if (!nlohmann::json::accept(partialJson)) {
+        return false;
+    }
+
     // Enter Markdown component streaming mode
     _isComponentStreaming = true;
     _componentStart = componentStartPos;
     _contentValueStart = contentStart;
+    _cachedComponentId = componentId;
 
-    // Cache the component id (raw JSON-encoded)
-    _cachedComponentId = extractRawStringValue(buffer.substr(_componentStart), "\"id\"");
+    ProtocolStreamExtractor::ParseResult result;
+    result.type = ProtocolStreamExtractor::ParseResult::Type::ComponentUpdate;
+    result.componentJson = partialJson;
+    result.surfaceId = surfaceId;
+    result.version = version;
+    outResults.emplace_back(std::move(result));
 
-    // Deliver the first partial content immediately (using the content field)
-    std::string partialJson = constructPartialJson(buffer, _componentStart, "\"}");
-    if (!partialJson.empty()) {
-        ProtocolStreamExtractor::ParseResult result;
-        result.type = ProtocolStreamExtractor::ParseResult::Type::ComponentUpdate;
-        result.componentJson = partialJson;
-        result.surfaceId = surfaceId;
-        result.version = version;
-        outResults.emplace_back(std::move(result));
-    }
-
-    // Compute the end position of the sent content (accounting for trailing backslash trimming)
-    size_t trailingBackslashes = 0;
-    for (size_t i = buffer.length(); i > _contentValueStart; ) {
-        i--;
-        if (buffer[i] == '\\') {
-            trailingBackslashes++;
-        } else {
-            break;
-        }
-    }
-    _lastSentContentEnd = (trailingBackslashes % 2 != 0)
-        ? buffer.length() - 1
-        : buffer.length();
+    _lastSentContentEnd = safeEnd;
 
     return true; // Plugin takes over
 }
@@ -99,19 +95,14 @@ bool MarkdownStreamPlugin::continueComponentStreaming(
         std::string component = buffer.substr(_componentStart, endPos - _componentStart + 1);
         collectBindingPath(component);
 
-        // Extract the content close position and compute the final delta
-        size_t closePos = 0;
-        if (isStringValueClosed(buffer, _contentValueStart, closePos)) {
-            std::string delta = extractDelta(buffer, _lastSentContentEnd, closePos);
-            if (!delta.empty()) {
-                ProtocolStreamExtractor::ParseResult result;
-                result.type = ProtocolStreamExtractor::ParseResult::Type::ComponentUpdate;
-                result.componentJson = buildAppendContentJson(delta);
-                result.surfaceId = surfaceId;
-                result.version = version;
-                outResults.emplace_back(std::move(result));
-            }
-        }
+        // Send the complete component last. It replaces the partial one, so the final text and
+        // any members after it (e.g. "variant") are exact regardless of how the stream was split.
+        ProtocolStreamExtractor::ParseResult result;
+        result.type = ProtocolStreamExtractor::ParseResult::Type::ComponentUpdate;
+        result.componentJson = component;
+        result.surfaceId = surfaceId;
+        result.version = version;
+        outResults.emplace_back(std::move(result));
 
         outParsePosition = endPos + 1;
         _isComponentStreaming = false;
@@ -153,18 +144,7 @@ bool MarkdownStreamPlugin::continueComponentStreaming(
     outResults.emplace_back(std::move(result));
 
     // Update the sent position
-    size_t trailingBackslashes = 0;
-    for (size_t i = buffer.length(); i > _lastSentContentEnd; ) {
-        i--;
-        if (buffer[i] == '\\') {
-            trailingBackslashes++;
-        } else {
-            break;
-        }
-    }
-    _lastSentContentEnd = (trailingBackslashes % 2 != 0)
-        ? buffer.length() - 1
-        : buffer.length();
+    _lastSentContentEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, _lastSentContentEnd, buffer.length());
 
     return true; // Still streaming
 }
@@ -241,18 +221,7 @@ bool MarkdownStreamPlugin::handleIncompleteDataModel(
         }
 
         // Compute the end position of the sent leaf value
-        size_t trailingBackslashes = 0;
-        for (size_t i = buffer.length(); i > entry.leafValueStart; ) {
-            i--;
-            if (buffer[i] == '\\') {
-                trailingBackslashes++;
-            } else {
-                break;
-            }
-        }
-        entry.lastSentEnd = (trailingBackslashes % 2 != 0)
-            ? buffer.length() - 1
-            : buffer.length();
+        entry.lastSentEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, entry.leafValueStart, buffer.length());
     }
 
     return true; // Plugin takes over
@@ -346,18 +315,7 @@ bool MarkdownStreamPlugin::continueDataModelStreaming(
             delta = extractDelta(buffer, entry.lastSentEnd, std::string::npos);
             if (!delta.empty()) {
                 // Update sent position
-                size_t trailingBackslashes = 0;
-                for (size_t i = buffer.length(); i > entry.lastSentEnd; ) {
-                    i--;
-                    if (buffer[i] == '\\') {
-                        trailingBackslashes++;
-                    } else {
-                        break;
-                    }
-                }
-                entry.lastSentEnd = (trailingBackslashes % 2 != 0)
-                    ? buffer.length() - 1
-                    : buffer.length();
+                entry.lastSentEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, entry.lastSentEnd, buffer.length());
             }
         }
 
@@ -410,15 +368,7 @@ bool MarkdownStreamPlugin::continueDataModelStreaming(
             } else {
                 // Leaf is not yet closed; extract to end of buffer
                 leafContent = extractDelta(buffer, leafStart, std::string::npos);
-                size_t trailingBackslashes = 0;
-                for (size_t i = buffer.length(); i > leafStart; ) {
-                    i--;
-                    if (buffer[i] == '\\') { trailingBackslashes++; }
-                    else { break; }
-                }
-                newEntry.lastSentEnd = (trailingBackslashes % 2 != 0)
-                    ? buffer.length() - 1
-                    : buffer.length();
+                newEntry.lastSentEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, leafStart, buffer.length());
             }
 
             // Send the first updateDataModel (containing only the leaf data for this binding path)
@@ -539,27 +489,6 @@ bool MarkdownStreamPlugin::isStringValueClosed(const std::string& buffer, size_t
     }
 
     return false;
-}
-
-std::string MarkdownStreamPlugin::constructPartialJson(
-    const std::string& data, size_t startPos, const std::string& suffix) const {
-    if (startPos >= data.length()) {
-        return "";
-    }
-
-    std::string partial = data.substr(startPos);
-
-    // Handle incomplete trailing escape: if the string ends with an odd number of \, remove the last one
-    size_t trailingBackslashes = 0;
-    for (auto it = partial.rbegin(); it != partial.rend() && *it == '\\'; ++it) {
-        trailingBackslashes++;
-    }
-    if (trailingBackslashes % 2 != 0) {
-        partial.pop_back();
-    }
-
-    partial += suffix;
-    return partial;
 }
 
 void MarkdownStreamPlugin::collectBindingPath(const std::string& componentJson) {
@@ -697,15 +626,9 @@ std::string MarkdownStreamPlugin::extractDelta(const std::string& buffer, size_t
 
     std::string delta;
     if (toPos == std::string::npos || toPos > buffer.length()) {
-        // Open-ended: read to end of buffer, handle trailing odd backslash
-        delta = buffer.substr(fromPos);
-        size_t trailingBackslashes = 0;
-        for (auto it = delta.rbegin(); it != delta.rend() && *it == '\\'; ++it) {
-            trailingBackslashes++;
-        }
-        if (trailingBackslashes % 2 != 0) {
-            delta.pop_back();
-        }
+        // Open-ended: read up to a cut that does not split an escape or UTF-8 sequence
+        size_t safeEnd = ProtocolStreamExtractor::findSafeStringCut(buffer, fromPos, buffer.length());
+        delta = buffer.substr(fromPos, safeEnd - fromPos);
     } else {
         // Closed range: exact bounds, no backslash handling needed
         if (toPos <= fromPos) {
@@ -871,7 +794,9 @@ std::string MarkdownStreamPlugin::buildDataModelEventJson(
     nlohmann::json eventObj;
     eventObj["surfaceId"] = entry.surfaceId;
     eventObj["path"] = entry.bindingPath;
-    eventObj["value"] = delta;
+    // delta is raw JSON string content (still escaped); store the decoded text
+    nlohmann::json decoded = nlohmann::json::parse("\"" + delta + "\"", nullptr, false);
+    eventObj["value"] = decoded.is_string() ? decoded : nlohmann::json(delta);
 
     nlohmann::json resultObj;
     resultObj[eventKey] = eventObj;

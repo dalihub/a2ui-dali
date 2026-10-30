@@ -99,9 +99,6 @@ private:
     /// Checks whether the string value starting at valueStart is closed (unescaped ").
     bool isStringValueClosed(const std::string& buffer, size_t valueStart, size_t& closePos) const;
 
-    /// Builds a partial JSON from startPos to end of buffer, handling trailing escapes, then appends suffix.
-    std::string constructPartialJson(const std::string& data, size_t startPos, const std::string& suffix) const;
-
     /// Parses a complete component JSON and records the binding path if it is a Text data binding.
     void collectBindingPath(const std::string& componentJson);
 
@@ -119,12 +116,8 @@ private:
     /// Extracts the incremental content from buffer[fromPos, toPos); when toPos==npos reads to end and handles trailing odd backslash.
     std::string extractDelta(const std::string& buffer, size_t fromPos, size_t toPos) const;
 
-    /// Builds a textChunk component JSON using the cached _cachedComponentId, the delta text, and any cached extra fields.
+    /// Builds a textChunk component JSON using the cached _cachedComponentId and the delta text.
     std::string buildAppendTextChunkJson(const std::string& delta) const;
-
-    /// Caches post-text fields (e.g., "styles") from a complete component JSON
-    /// for inclusion in subsequent textChunk JSONs via buildAppendTextChunkJson.
-    void cacheExtraFieldsFromComponent(const std::string& componentJson);
 
     // ---- DataModel nested path helpers ----
 
@@ -164,7 +157,6 @@ private:
     size_t _textValueStart = 0;           // Start position of the text value
     size_t _lastSentContentEnd = 0;       // Buffer end position of the last sent content
     std::string _cachedComponentId;       // Cached component id during streaming (raw JSON-encoded)
-    std::string _cachedExtraFields;        // Post-text fields as raw JSON key-value pairs (e.g., "styles":{...})
 
     // ---- DataModel streaming state ----
     bool _isDataModelStreaming = false;
