@@ -316,8 +316,27 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
   }
 
   int index = 0;
+  // V2: children that make their FIRST real appearance in this pass — only
+  // these join the stagger reveal below.
+  std::vector<View> freshChildren;
   for(const auto& childId : comp.childIds)
   {
+    // Partial render mode: if this child is NOT in the changed set, reuse its
+    // existing View from the DiffEngine and skip all layout processing. Only
+    // the parent and the changed child should be re-rendered; siblings keep
+    // their existing Views and layout params untouched.
+    if(mPartialRenderMode && mPartialRenderIds.find(childId) == mPartialRenderIds.end())
+    {
+      if(mDiffEngine.HasView(childId))
+      {
+        View cachedChild = mDiffEngine.GetView(childId);
+        flex.Add(cachedChild);
+        index++;
+        continue;
+      }
+      // Not in DiffEngine — fall through to normal render (new child)
+    }
+
     const ComponentModel* childComp = components.GetComponent(childId);
     // A default-sized Image placed directly in a Row is a list thumbnail — hint
     // RenderImage to build it small so it doesn't overflow the row. (Shrinking the
@@ -357,7 +376,16 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
     {
       mTextWidthBudget = parentBudget;
     }
+    // Must be read BEFORE RenderComponent, which registers the view it
+    // creates. A shimmer placeholder does NOT count as a real view, so a
+    // forward-referenced component still gets its entrance animation when
+    // its real content first renders.
+    const bool hadRealView = HasRealView(childId);
     View child = RenderComponent(childId, components, ctx);
+    if(child && childComp && !hadRealView)
+    {
+      freshChildren.push_back(child);
+    }
     mImageThumbnailHint = false;
     mAvatarSmallHint = false;
 
@@ -558,6 +586,24 @@ View A2uiRenderer::RenderFlexContainer(const ComponentModel& comp,
     flex.Add(child);
     index++;
   }
+
+  // Stagger-reveal all direct children with an upward-floating animation so
+  // every Row/Column's children appear one by one (fade + float up) instead
+  // of popping in all at once. Only fires when the static childIds path was
+  // taken (index > 0).
+  //
+  // V2: stagger ONLY the children that made their first real appearance in
+  // this pass. Reused views (already visible) and shimmer placeholders are
+  // never animated, which structurally prevents replays on
+  // incremental/partial re-renders — no partial-mode or played-once guard is
+  // needed here. A full render of a fresh surface still floats everything,
+  // because nothing has a real view yet.
+  if(!freshChildren.empty())
+  {
+    StaggerRevealChildren(freshChildren);
+  }
+
+  mTextWidthBudget = savedBudget;
 
   mTextWidthBudget = savedBudget;
   return flex;

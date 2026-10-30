@@ -108,7 +108,12 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
         [sizeItemMainAxis, horizontal, gap](View itemView, int itemIndex) {
           sizeItemMainAxis(itemView);
           ApplyItemGap(itemView, horizontal, gap, itemIndex == 0);
-        });
+        },
+        // onComplete: children are filled asynchronously (data arrives via
+        // updateDataModel after components), so the stagger must fire here —
+        // only when items actually exist in the container.
+        [this](View container) { StaggerRevealChildren(container); }
+      );
 
       return listContainer;
     }
@@ -144,6 +149,12 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
             }
           }
 
+          // Items are owned by this list's generation, not the incremental bookkeeping
+          // (see mTemplateItemDepth): they all share the template's component ids.
+          std::shared_ptr<WatchScope> generation = BeginItemGeneration();
+          std::shared_ptr<WatchScope> savedScope = mWatchScope;
+          mWatchScope                            = generation;
+          TemplateItemScope itemScope(mTemplateItemDepth);
           int itemIndex = 0;
           for(auto arrIt = arrayNode->CBegin(); arrIt != arrayNode->CEnd(); ++arrIt)
           {
@@ -159,6 +170,14 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
 
             itemIndex++;
           }
+          mWatchScope = savedScope;
+
+          // Guard: skip stagger on partial/incremental re-renders to prevent
+          // repeated upward-floating animations on every data update.
+          if(!mPartialRenderMode)
+          {
+            StaggerRevealChildren(listContainer);
+          }
 
           return listContainer;
         }
@@ -167,14 +186,30 @@ View A2uiRenderer::RenderList(const ComponentModel& comp,
   }
 
   // Simple list: children is an array of component IDs
+  // V2: stagger only children making their FIRST real appearance (same rule
+  // as flex-container.cpp) — reused views and shimmer placeholders are never
+  // re-animated.
   int index = 0;
+  std::vector<View> freshChildren;
   for(const auto& childId : comp.childIds)
   {
+    const bool hadRealView = HasRealView(childId);
     View child = RenderComponent(childId, components, ctx);
+    if(child && components.GetComponent(childId) && !hadRealView)
+    {
+      freshChildren.push_back(child);
+    }
     sizeItemMainAxis(child);
     ApplyItemGap(child, horizontal, gap, index == 0);
     listContainer.Add(child);
     index++;
+  }
+
+  // Simple childIds path: children were added synchronously above, so trigger
+  // the stagger directly.
+  if(!freshChildren.empty())
+  {
+    StaggerRevealChildren(freshChildren);
   }
 
   return listContainer;

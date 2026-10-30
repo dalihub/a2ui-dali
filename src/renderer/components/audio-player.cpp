@@ -37,7 +37,7 @@ View A2uiRenderer::RenderAudioPlayer(const ComponentModel& comp, DataContext& ct
     ImageView play = ImageView::New(playPath.c_str());
     play.SetRequestedWidth(Metrics::Dp(18));
     play.SetRequestedHeight(Metrics::Dp(18));
-    play.SetImageColor(UiColor(0xFFFFFF));
+    play.SetImageColor(COLOR_ICON_ON_PRIMARY);
     btn.Add(play);
   }
   bar.Add(btn);

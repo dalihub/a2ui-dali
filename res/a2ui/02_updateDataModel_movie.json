@@ -1,0 +1,29 @@
+{
+    "version": "v0.9",
+    "updateDataModel": {
+        "surfaceId": "movie-cd4ec28a-3086-4e6c-ab19-bead2e3e1248",
+        "value": {
+            "movie": {
+                "title": "The Shawshank Redemption",
+                "release_date": "1994",
+                "production_countries": "United States of America",
+                "genres": [
+                    "Drama",
+                    "Crime"
+                ],
+                "runtime": 142,
+                "overview": "Imprisoned in the 1940s for the double murder of his wife and her lover, upstanding banker Andy Dufresne begins a new life at the Shawshank prison, where he puts his accounting skills to work for an amoral warden. During his long stretch in prison, Dufresne comes to be admired by the other inmates -- including an older prisoner named Red -- for his integrity and unquenchable sense of hope.",
+                "poster_path": "https://image.tmdb.org/t/p/w500/9cqNxx0GxF0bflZmeSMuL5tnGzr.jpg",
+                "director": "Frank Darabont",
+                "cast": [
+                    "Tim Robbins",
+                    "Morgan Freeman",
+                    "Bob Gunton",
+                    "William Sadler",
+                    "Clancy Brown"
+                ],
+                "vote_average": 8.72
+            }
+        }
+    }
+}

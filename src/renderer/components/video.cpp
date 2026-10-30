@@ -13,7 +13,7 @@ View A2uiRenderer::RenderVideo(const ComponentModel& comp, DataContext& ctx)
   frame.SetAlignItems(FlexAlign::CENTER);
   frame.SetRequestedWidth(MATCH_PARENT);
   frame.SetRequestedHeight(Metrics::Dp(200));  // dp-scaled (raw literals halve under 2x capture)
-  frame.SetBackgroundColor(UiColor(0x202024));
+  frame.SetBackgroundColor(COLOR_VIDEO_FRAME);
   frame.SetCornerRadius(Metrics::RadiusCard());
   frame.SetMargin(Extents(0, 0, static_cast<uint16_t>(Metrics::Dp(6)), static_cast<uint16_t>(Metrics::Dp(6))));
 
@@ -46,7 +46,7 @@ View A2uiRenderer::RenderVideo(const ComponentModel& comp, DataContext& ctx)
     ImageView play = ImageView::New(playPath.c_str());
     play.SetRequestedWidth(Metrics::Dp(48));
     play.SetRequestedHeight(Metrics::Dp(48));
-    play.SetImageColor(UiColor(0xFFFFFF));
+    play.SetImageColor(COLOR_ICON_ON_PRIMARY);
     frame.Add(play);
   }
   return frame;

@@ -21,13 +21,16 @@
 #include "../core/expression-parser.h"
 #include "../core/action-dispatcher.h"
 #include "../core/diff-engine.h"
+#include "renderer/util/magic-reveal-manager.h"
 #include "view-pool.h"
 #include "component-registry.h"
 #include <dali-ui-foundation/dali-ui-foundation.h>
 #include <dali/public-api/events/tap-gesture-detector.h>
+#include <dali/public-api/adaptor-framework/timer.h>
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace A2ui
@@ -54,9 +57,34 @@ public:
    */
   Dali::Ui::View Render(SurfaceModel& surface);
 
+  /// Incremental render: update only changed components in the existing view tree.
+  /// Falls back to full Render() if no previous render exists or root itself changed.
+  /// Returns the current root view (same object already on stage — caller need not re-mount).
+  Dali::Ui::View RenderIncremental(SurfaceModel& surface);
+
+  /// Whether a previous render exists (root view registered in DiffEngine).
+  bool IsRendered() const { return mDiffEngine.HasView("root"); }
+
+  /// Reset render state so next call goes through full Render().
+  void InvalidateRenderState();
+
+  /// Clean full render of @p surface that also resets the incremental state to it.
+  Dali::Ui::View RenderFull(SurfaceModel& surface);
+
+  /// Surface whose views the incremental state (DiffEngine, watchers) describes; empty when
+  /// nothing is rendered. Component ids ("root" included) repeat across surfaces, so that
+  /// state is only valid for this one surface.
+  const std::string& GetRenderedSurfaceId() const { return mRenderedSurfaceId; }
+
+
   /// How many tap targets the renderer is holding alive (diagnostics — a list that rebuilds
   /// without releasing its old detectors shows up here as a count that keeps climbing).
   size_t GetTapDetectorCount() const { return mTapDetectors.size(); }
+
+  /// How many times StaggerRevealChildren has actually played (diagnostics —
+  /// a container re-staggering already-visible children shows up here as a
+  /// count that keeps climbing across incremental updates).
+  size_t GetStaggerPlayedCount() const { return mStaggerPlayedCount; }
 
   ActionDispatcher& GetActionDispatcher() { return mActionDispatcher; }
   DiffEngine& GetDiffEngine() { return mDiffEngine; }
@@ -91,6 +119,14 @@ private:
   Dali::Ui::View RenderButton(const ComponentModel& comp,
                               const SurfaceComponentsModel& components,
                               DataContext& ctx);
+
+  /// Compute the correct AlignSelf for a Button based on its parent container's
+  /// alignment and centred-style detection. Mirrors the override logic in
+  /// flex-container.cpp so the button is correct even on incremental add
+  /// (where the parent's child loop never re-runs).
+  Dali::Ui::FlexAlign ComputeButtonAlignSelf(const ComponentModel& comp,
+                                             const SurfaceComponentsModel& components) const;
+
   Dali::Ui::View RenderImage(const ComponentModel& comp, DataContext& ctx);
   Dali::Ui::View RenderDivider(const ComponentModel& comp);
   Dali::Ui::View RenderPlaceholder(const ComponentModel& comp);
@@ -116,6 +152,7 @@ private:
                             const SurfaceComponentsModel& components,
                             DataContext& ctx);
   Dali::Ui::View RenderIcon(const ComponentModel& comp, DataContext& ctx);
+  Dali::Ui::View RenderView(const ComponentModel& comp, DataContext& ctx);
 
   /// Data-driven child list: children = {path, componentId}. Iterates the data array at
   /// `path`, instantiates `componentId` per element under a per-item scoped DataContext,
@@ -138,7 +175,44 @@ private:
   void BuildTemplateChildren(const std::string& templateId, const std::string& arrayPath,
                              const SurfaceComponentsModel& components, DataContext& ctx,
                              Dali::Ui::View container,
-                             std::function<void(Dali::Ui::View item, int index)> prepareItem);
+                             std::function<void(Dali::Ui::View item, int index)> prepareItem,
+                             std::function<void(Dali::Ui::View container)> onComplete = nullptr);
+
+  /// Stagger-reveal children of @p container one by one with a fade-in +
+  /// upward-floating animation. Sets every child's opacity to 0 and shifts it
+  /// down by @p floatOffsetDp, then animates each in sequence with a per-item
+  /// time offset so they appear progressively rather than all at once.
+  /// @param container     The FlexLayout whose direct children should be revealed.
+  /// @param staggerSec    Delay between each child's reveal start.
+  /// @param fadeSec       Duration of each child's fade-in + float-up.
+  /// @param floatOffsetDp Distance (dp) each child starts below its final position.
+  void StaggerRevealChildren(Dali::Ui::View container, float staggerSec = 0.5f,
+                             float fadeSec = 0.5f, float floatOffsetDp = 16.0f);
+
+  /// V2: stagger-reveal an explicit subset of views (the freshly-rendered
+  /// children of a container) instead of every child of a container, so that
+  /// reused/already-visible children are never re-animated.
+  void StaggerRevealChildren(const std::vector<Dali::Ui::View>& views,
+                             float staggerSec = 0.5f, float fadeSec = 0.5f,
+                             float floatOffsetDp = 16.0f);
+
+  /// True when the DiffEngine holds a REAL rendered view for @p id (not a
+  /// shimmer placeholder). Used to tell a component's first real appearance
+  /// from an already-visible one.
+  bool HasRealView(const std::string& id) const;
+
+  /// Float-in a single view with a fade + upward Y-position animation.
+  /// Used for incrementally-added components so they appear with the same
+  /// upward-floating feel as stagger-revealed children.
+  /// @param view          The view to animate.
+  /// @param fadeSec       Duration of the fade-in + float-up.
+  /// @param floatOffsetDp Distance (dp) the view starts below its final position.
+  void FloatInView(Dali::Ui::View view, float fadeSec = 0.5f, float floatOffsetDp = 16.0f);
+
+  /// Play a looping animation only while @p view is on the scene. A looping animation
+  /// never finishes, and DALi keeps a playing one alive (and the frame loop busy) after
+  /// its view has been removed, so it is stopped on disconnection.
+  void LoopWhileOnScene(Dali::Ui::View view, Dali::Animation animation);
 
   // === Remote / keyboard focus ===
   /// Make @p view reachable by the TV remote: mark it keyboard-focusable so the
@@ -189,6 +263,9 @@ private:
   /// The generation currently being built (null outside BuildTemplateChildren).
   std::shared_ptr<WatchScope> mWatchScope;
 
+  /// Start a template item generation under the active one (see mComponentScopes).
+  std::shared_ptr<WatchScope> BeginItemGeneration();
+
   /// Watch @p path, recording the observer in the active generation (if any).
   void RecordWatch(DataModel& model, const std::string& path, DataChangeCallback cb) const;
 
@@ -231,6 +308,7 @@ private:
   ExpressionParser   mExprParser;
   ActionDispatcher   mActionDispatcher;
   DiffEngine         mDiffEngine;
+  std::string        mRenderedSurfaceId;
   ViewPool           mViewPool;
 
   // Owns TapGestureDetector handles for the current surface. dali-ui has no
@@ -238,10 +316,147 @@ private:
   // detector and must keep the handles alive for as long as the view tree.
   std::vector<Dali::TapGestureDetector> mTapDetectors;
 
+  // Manages MagicRevealEffect for every ImageView created by RenderImage.
+  // Each ImageView is auto-registered; the reveal plays on first image load.
+  // Held via unique_ptr so the header doesn't need the full definition.
+  std::unique_ptr<MagicRevealManager> mRevealManager;
+
+  // Keeps stagger-reveal animations alive for the duration of playback.
+  // A vector (not a single Animation) so multiple Lists on the same surface
+  // can each run their own stagger without overwriting one another. Without
+  // holding a reference, Dali would garbage-collect the Animation before it
+  // finishes, and children would stay at opacity 0. Completed animations are
+  // pruned at the start of each StaggerRevealChildren call.
+  std::vector<Dali::Animation> mStaggerAnimations;
+  // Keeps single-view float-in animations alive (for incrementally-added
+  // components). Same rationale as mStaggerAnimations: without holding a
+  // reference, Dali would GC the Animation before it finishes.
+  std::vector<Dali::Animation> mFloatAnimations;
+  // Timers that defer the stagger/float animation until layout has positioned
+  // children (POSITION_Y is 0 during the render pass). Kept alive here so Dali
+  // doesn't GC them before they fire.
+  std::vector<Dali::Timer> mStaggerTimers;
+  std::vector<Dali::Timer> mFloatTimers;
   // Pointer to current components model (valid only during Render call)
   const SurfaceComponentsModel* mCurrentComponents = nullptr;
   DataContext*                   mCurrentCtx = nullptr;
+
+  // === Incremental rendering internals ===
+
+  /// Batch-process a set of changed component IDs, rebuilding only the top-level
+  /// changes (descendants of a changed ancestor are covered by the ancestor's rebuild).
+  void ApplyIncrementalUpdates(SurfaceModel& surface,
+                               const std::vector<std::string>& changedIds,
+                               DataContext& ctx);
+
+  /// Rebuild one component and splice it into the parent container in place.
+  /// @param isNew  true → component is new (Add to parent); false → replace existing view.
+  void UpdateOneComponent(SurfaceModel& surface, const std::string& componentId,
+                          DataContext& ctx, bool isNew);
+
+  /// Copy flex layout params (grow/shrink/basis/alignSelf), requested width/height,
+  /// and margin from oldView to newView so the replacement keeps its slot.
+  void CopyLayoutParams(Dali::Ui::View oldView, Dali::Ui::View newView);
+
+  /// Remove all watchers registered by a given component from the DataModel.
+  void RetireComponentWatchers(DataModel& model, const std::string& componentId);
+
+  /// Re-render a parent container after a child was added/replaced, so the
+  /// parent's child loop (flex params, pinning, alignment) runs with all
+  /// children present. Retires watchers for the parent and all its children,
+  /// then splices the new parent view into the grandparent.
+  ///
+  /// When changedChildId is non-empty, partial render mode is used: only the
+  /// parent and the named child are re-rendered; other children reuse their
+  /// existing Views from the DiffEngine. When empty, the full subtree is rebuilt.
+  void RerenderParent(SurfaceModel& surface, const std::string& parentId,
+                      DataContext& ctx, const std::string& changedChildId = "");
+
+  /// Filter changedIds to only those whose ancestors are NOT also in the set.
+  /// A changed ancestor implies the descendant is rebuilt as part of the ancestor's
+  /// recursive RenderComponent — no need to handle it separately.
+  /// @p changedIds with each template component (or descendant) replaced by the
+  /// rendered Lists that instantiate it.
+  std::vector<std::string> MapTemplatesToLists(const std::vector<std::string>& changedIds,
+                                               const SurfaceComponentsModel& components) const;
+
+  std::vector<std::string> FilterTopLevelChanged(
+    const std::vector<std::string>& changedIds,
+    const SurfaceComponentsModel& components) const;
+
+  /// The component ID currently being rendered (set in RenderComponent, used by
+  /// RecordWatch to associate watchers with their owning component for retirement).
+  mutable std::string mCurrentRenderingId;
+
+  /// componentId → watcher IDs registered during that component's render.
+  /// Used by RetireComponentWatchers during incremental replacement.
+  /// Mutable because RecordWatch is const (called from const WatchBinding etc).
+  mutable std::unordered_map<std::string, std::vector<uint32_t>> mComponentWatchers;
+
+  /// componentId → the template item generations its render created (a List's items).
+  /// Retired together with that component's watchers, so a re-sent List does not leave
+  /// its previous items' watches and tap detectors behind.
+  std::unordered_map<std::string, std::vector<std::shared_ptr<WatchScope>>> mComponentScopes;
+
+  /// > 0 while template items are being rendered. Items are owned by their generation
+  /// (WatchScope), not by the incremental bookkeeping: they share one component id per
+  /// template, so they are never registered in the DiffEngine or mComponentWatchers.
+  /// A data-driven List rebuild can also run while another surface owns that state.
+  int mTemplateItemDepth = 0;
+
+  /// Components on the current RenderComponent path, to stop a self-containing tree.
+  std::unordered_set<std::string> mRenderingIds;
+
+  /// Marks a stretch of template item rendering (see mTemplateItemDepth).
+  struct TemplateItemScope
+  {
+    int& depth;
+    explicit TemplateItemScope(int& d)
+    : depth(d)
+    {
+      ++depth;
+    }
+    ~TemplateItemScope()
+    {
+      --depth;
+    }
+  };
+
+  // === Partial rendering (local render) ===
+
+  // When a parent needs to be re-rendered because a child changed, we don't want
+  // to re-render ALL children — only the changed one. mPartialRenderMode enables
+  // this: RenderComponent checks it and, for IDs NOT in mPartialRenderIds,
+  // returns the existing View from the DiffEngine instead of re-rendering.
+  bool mPartialRenderMode = false;
+  std::unordered_set<std::string> mPartialRenderIds;
+
+  // Tracks which array paths have already had their stagger-reveal animation
+  // played. Persists across BuildTemplateChildren re-creations (which happen
+  // every time RerenderParent re-renders the parent). Without this, each
+  // re-creation gets a fresh staggerPlayed=false, and the next data-watch
+  // callback re-triggers the stagger animation on ALL children.
+  std::unordered_set<std::string> mStaggerPlayedPaths;
+
+  // Tracks which component IDs have already had their float-in animation
+  // played. Prevents FloatInView from re-triggering on views that are
+  // re-created by RerenderParent but were already visible to the user.
+  // Without this, RerenderParent's rebuild of a parent causes all its
+  // children to flash invisible (opacity→0) and float up again.
+  std::unordered_set<std::string> mFloatedComponentIds;
+
+  // Tracks component IDs whose DiffEngine-cached view is only a SHIMMER
+  // placeholder (a forward-referenced component that has not arrived yet), as
+  // opposed to a real rendered view. This is what lets the stagger-reveal
+  // play ONLY for first real appearances: a reused real view and a shimmer
+  // placeholder are both in the DiffEngine, but neither may be animated —
+  // the former is already visible, the latter has no content yet.
+  std::unordered_set<std::string> mShimmerIds;
+
+  // Total StaggerRevealChildren plays so far (see GetStaggerPlayedCount).
+  size_t mStaggerPlayedCount = 0;
 };
+
 
 } // namespace A2ui
 

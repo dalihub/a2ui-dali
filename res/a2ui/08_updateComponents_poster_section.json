@@ -1,0 +1,18 @@
+{
+    "version": "v0.9",
+    "updateComponents": {
+        "surfaceId": "movie-cd4ec28a-3086-4e6c-ab19-bead2e3e1248",
+        "components": [
+            {
+                "id": "poster_section",
+                "component": "Image",
+                "url": {
+                    "path": "/movie/poster_path"
+                },
+                "fit": "cover",
+                "width": 250,
+                "height": 300
+            }
+        ]
+    }
+}

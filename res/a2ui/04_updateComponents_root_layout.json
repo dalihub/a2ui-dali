@@ -1,0 +1,19 @@
+{
+    "version": "v0.9",
+    "updateComponents": {
+        "surfaceId": "movie-cd4ec28a-3086-4e6c-ab19-bead2e3e1248",
+        "components": [
+            {
+                "id": "root",
+                "component": "Column",
+                "align": "start",
+                "justify": "start",
+                "gap": 16,
+                "children": [
+                    "status_label",
+                    "main_content"
+                ]
+            }
+        ]
+    }
+}

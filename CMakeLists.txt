@@ -77,6 +77,9 @@ SET(A2UI_LIB_SOURCES
   src/renderer/a2ui-theme.cpp
   src/renderer/a2ui-metrics.cpp
   src/renderer/view-pool.cpp
+  src/renderer/util/shimmer-effect.cpp
+  src/renderer/util/magic-reveal-effect.cpp
+  src/renderer/util/magic-reveal-manager.cpp
   ${A2UI_COMPONENT_SOURCES}
 )
 
@@ -211,9 +214,45 @@ SET_TARGET_PROPERTIES(a2ui-stream-parser-test PROPERTIES
 )
 
 # ============================================================
+# Incremental core test: parent map + structural helpers (no display)
+# ============================================================
+SET(INC_CORE_TEST_NAME a2ui-incremental-core-test)
+ADD_EXECUTABLE(${INC_CORE_TEST_NAME}
+  test/incremental-core-test.cpp
+  ${A2UI_CORE_SOURCES}
+)
+
+TARGET_INCLUDE_DIRECTORIES(${INC_CORE_TEST_NAME} PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${DALICORE_INCLUDE_DIRS}
+  ${DALIADAPTOR_INCLUDE_DIRS}
+  ${DALI_UI_FOUNDATION_INCLUDE_DIRS}
+  ${CURL_INCLUDE_DIRS}
+)
+
+TARGET_LINK_LIBRARIES(${INC_CORE_TEST_NAME}
+  ${DALICORE_LIBRARIES}
+  ${DALIADAPTOR_LIBRARIES}
+  ${DALI_UI_FOUNDATION_LIBRARIES}
+  ${CURL_LIBRARIES}
+  pthread
+)
+
+IF(DEFINED ENV{DESKTOP_PREFIX})
+  TARGET_LINK_DIRECTORIES(${INC_CORE_TEST_NAME} PRIVATE
+    $ENV{DESKTOP_PREFIX}/lib
+  )
+ENDIF()
+
+SET_TARGET_PROPERTIES(${INC_CORE_TEST_NAME} PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+)
+
+# ============================================================
 # Streaming render test: drives the real renderer, needs a display
 # (run via tools/run-tests.sh, which wraps it in Xvfb)
 # ============================================================
+
 SET(RENDER_TEST_NAME a2ui-streaming-render-test)
 ADD_EXECUTABLE(${RENDER_TEST_NAME} test/streaming-render-test.cpp)
 
@@ -224,7 +263,21 @@ SET_TARGET_PROPERTIES(${RENDER_TEST_NAME} PROPERTIES
 )
 
 # ============================================================
+# Incremental render test: drives the real renderer with updateComponents
+# to verify incremental rendering, needs a display (run via tools/run-tests.sh)
+# ============================================================
+SET(INC_RENDER_TEST_NAME a2ui-incremental-render-test)
+ADD_EXECUTABLE(${INC_RENDER_TEST_NAME} test/incremental-render-test.cpp)
+
+TARGET_LINK_LIBRARIES(${INC_RENDER_TEST_NAME} a2ui-dali)
+
+SET_TARGET_PROPERTIES(${INC_RENDER_TEST_NAME} PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+)
+
+# ============================================================
 # Example: examples/basic-renderer
+
 # ============================================================
 SET(EXAMPLE_NAME a2ui-basic-renderer)
 ADD_EXECUTABLE(${EXAMPLE_NAME} examples/basic-renderer/main.cpp)
@@ -236,7 +289,18 @@ SET_TARGET_PROPERTIES(${EXAMPLE_NAME} PROPERTIES
 )
 
 # ============================================================
+# Example: examples/incremental-demo — incremental rendering demo with logs
+# ============================================================
+SET(INC_DEMO_NAME a2ui-incremental-demo)
+ADD_EXECUTABLE(${INC_DEMO_NAME} examples/incremental-demo/main.cpp)
+TARGET_LINK_LIBRARIES(${INC_DEMO_NAME} a2ui-dali)
+SET_TARGET_PROPERTIES(${INC_DEMO_NAME} PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+)
+
+# ============================================================
 # Example: examples/gallery-demo — runnable catalog browser
+
 # ============================================================
 ADD_EXECUTABLE(a2ui-gallery-demo examples/gallery-demo/main.cpp)
 TARGET_LINK_LIBRARIES(a2ui-gallery-demo a2ui-dali)

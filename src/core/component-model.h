@@ -38,6 +38,12 @@ struct ComponentModel
   const Dali::Ui::Integration::TreeNode* rawNode = nullptr; // Original JSON node for property lookup
   std::vector<std::string> childIds;  // children: ["id1", "id2"] (Row, Column)
   std::string              childId;   // child: "single_id" (Card, Button)
+
+  /// Whether this component needs its parent to be re-rendered when it changes.
+  /// Container types (Button, Card, Row, Column, Tabs, List, Modal) = true:
+  /// their parent's render logic depends on child content/type/properties.
+  /// Leaf types (Text, Image, Icon, etc.) = false: they self-manage updates.
+  bool needsParentRerender = false;
 };
 
 } // namespace A2ui

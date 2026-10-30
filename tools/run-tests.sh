@@ -4,9 +4,11 @@
 #   tools/run-tests.sh
 #
 # 1. a2ui-conformance-test      — A2UI v0.9 message parsing / model population (no display)
-# 2. a2ui-streaming-render-test — real renderer + real DALi view tree (needs a display,
+# 2. a2ui-incremental-core-test — parent map + incremental change tracking (no display)
+# 3. a2ui-streaming-render-test — real renderer + real DALi view tree (needs a display,
 #                                 so it runs under Xvfb like tools/capture.sh)
-# 3. a2ui-stream-parser-test    — src/stream chunked-stream parser (no display)
+# 4. a2ui-incremental-render-test — incremental updates on the real renderer (Xvfb)
+# 5. a2ui-stream-parser-test    — src/stream chunked-stream parser (no display)
 #
 # Requires: . setenv sourced (DESKTOP_PREFIX, LD_LIBRARY_PATH, dali2-*).
 set -u
@@ -24,11 +26,29 @@ else
 fi
 
 echo
+echo "### incremental core test"
+if [ -x "$BIN/a2ui-incremental-core-test" ]; then
+  (cd "$BIN" && ./a2ui-incremental-core-test) || status=1
+else
+  echo "[run-tests] not built: $BIN/a2ui-incremental-core-test" >&2
+  status=1
+fi
+
+echo
 echo "### streaming render test (Xvfb)"
 if [ -x "$BIN/a2ui-streaming-render-test" ]; then
   xvfb-run -a -s "-screen 0 720x1080x24" "$BIN/a2ui-streaming-render-test" "$HERE" || status=1
 else
   echo "[run-tests] not built: $BIN/a2ui-streaming-render-test" >&2
+  status=1
+fi
+
+echo
+echo "### incremental render test (Xvfb)"
+if [ -x "$BIN/a2ui-incremental-render-test" ]; then
+  (cd "$HERE" && xvfb-run -a -s "-screen 0 720x1080x24" "$BIN/a2ui-incremental-render-test") || status=1
+else
+  echo "[run-tests] not built: $BIN/a2ui-incremental-render-test" >&2
   status=1
 fi
 

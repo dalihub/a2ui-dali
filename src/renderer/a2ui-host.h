@@ -71,6 +71,7 @@ public:
   {
     mSurfaces.Reset();
     mProcessor.Reset();
+    mRenderer.InvalidateRenderState();
   }
 
 private:

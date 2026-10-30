@@ -88,6 +88,11 @@ View A2uiRenderer::RenderText(const ComponentModel& comp, DataContext& ctx)
   label.SetTextColor(COLOR_TEXT_DEFAULT);
   label.SetMultiLine(wrappable);
   label.SetLineWrapMode(Text::LineWrapMode::WORD);
+  const char* bg = GetNodeString(*comp.rawNode, "background", "");
+  if(bg[0] != '\0')
+  {
+    label.SetBackgroundColor(ParseHexColor(bg));
+  }
 
   // DALi Label inside a flex-grown parent sometimes measures height=0 when the parent's
   // resolved width is only known after the layout pass, so we reserve a height estimate.

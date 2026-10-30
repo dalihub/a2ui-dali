@@ -39,4 +39,9 @@ extern const UiColor COLOR_SLIDER_TRACK    = A2uiTheme::Color("OutlineLow");    
 extern const UiColor COLOR_SLIDER_FILL     = A2uiTheme::Color("OnSurfaceContainer");        // subtle grey fill
 extern const UiColor COLOR_SLIDER_THUMB    = A2uiTheme::Color("OnSurfaceContainerHighest"); // dark thumb
 
+// Video / audio play-glyph colour (white icon on coloured background)
+extern const UiColor COLOR_ICON_ON_PRIMARY  = UiColor(0xFFFFFF);
+// Video frame placeholder background
+extern const UiColor COLOR_VIDEO_FRAME      = UiColor(0x202024);
+
 } // namespace A2ui

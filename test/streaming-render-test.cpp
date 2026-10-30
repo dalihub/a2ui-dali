@@ -48,6 +48,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -435,6 +436,137 @@ void RunAllTests(const std::string& root)
   RunParitySweep("gallery screens", root + "/examples/gallery-demo/screens/");
 }
 
+
+// === Stagger replay guard (staged, timer-driven) ===
+//
+// Regression coverage for the two stagger bugs seen in the movie demo:
+//   1. partial-render state leaked out of RenderComponent's fresh-subtree
+//      branch, so ancestor containers re-staggered children that were only
+//      being REUSED (the movie-detail block floated up a second time);
+//   2. the first fix attempt suppressed the leak so thoroughly that NO
+//      entrance animation ever played on the streaming path.
+//
+// Stage 1 feeds the movie-detail batch and arms a timer so every entrance
+// animation completes (BAKE restores opacity to 1). Stage 2 feeds the
+// recommendations batch and asserts IMMEDIATELY — before the new 100ms
+// stagger timers can fire — that:
+//   (a) movie-detail labels and ALL their ancestors are fully opaque
+//       (no replay on already-visible content);
+//   (b) the recommendations title has some ancestor at opacity 0 (the NEW
+//       section's entrance animation IS playing);
+//   (c) the recommendations content actually rendered.
+struct StaggerReplayFixture
+{
+  A2ui::A2uiHost host;
+  View           rootView;
+  Dali::Timer    pumpTimer;
+  FeedMode       mode = FeedMode::Incremental;
+  std::string    e2eDir;
+};
+
+View FindLabelByText(View view, const std::string& text)
+{
+  if(!view) return View();
+  if(!view.GetProperty<bool>(Dali::Actor::Property::VISIBLE)) return View();
+  Label label = Label::DownCast(view);
+  if(label && std::string(label.GetText().CStr()) == text) return label;
+  for(uint32_t i = 0; i < view.GetChildViewCount(); ++i)
+  {
+    View found = FindLabelByText(view.GetChildViewAt(i), text);
+    if(found) return found;
+  }
+  return View();
+}
+
+// Opacities of `leaf` itself and every ancestor up to (excluding) `root`.
+void CollectAncestorOpacities(View leaf, View root, std::vector<float>& out)
+{
+  for(View v = leaf; v && v != root;)
+  {
+    out.push_back(v.GetProperty<float>(Dali::Actor::Property::OPACITY));
+    Dali::Actor parent = v.GetParent();
+    v = parent ? View::DownCast(parent) : View();
+  }
+}
+
+void FeedFixture(StaggerReplayFixture& fx, const std::string& file)
+{
+  const std::string path = fx.e2eDir + file;
+  if(fx.mode == FeedMode::String)
+  {
+    fx.host.JsonFeed(ReadFile(path));
+    return;
+  }
+  std::istringstream lines(ReadFile(path));
+  std::string        line;
+  while(std::getline(lines, line))
+  {
+    if(line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+    fx.host.JsonFeed(line);
+  }
+}
+
+void RunStaggerStage2(StaggerReplayFixture& fx)
+{
+  const std::string mode = ModeName(fx.mode);
+  try
+  {
+    FeedFixture(fx, "recommendations-batch.jsonl");
+
+    // (a) no re-float of already-visible movie-detail content
+    for(const char* text : {"The Shawshank Redemption", "Director: Frank Darabont"})
+    {
+      View leaf = FindLabelByText(fx.rootView, text);
+      if(!leaf)
+      {
+        ReportTest(std::string("movie detail '") + text + "' present (" + mode + ")", false,
+                   "label not found in the view tree");
+        continue;
+      }
+      std::vector<float> ops;
+      CollectAncestorOpacities(leaf, fx.rootView, ops);
+      auto  minIt      = std::min_element(ops.begin(), ops.end());
+      float minOpacity = (minIt != ops.end()) ? *minIt : 1.0f;
+      ReportTest(std::string("no re-float of '") + text + "' (" + mode + ")",
+                 minOpacity >= 0.999f,
+                 "some ancestor has opacity " + std::to_string(minOpacity) +
+                   " — the upward float replayed on already-visible content");
+    }
+
+    // (b) the NEW recommendations section's entrance animation IS playing
+    View recsLeaf = FindLabelByText(fx.rootView, "You Might Also Like");
+    if(!recsLeaf)
+    {
+      ReportTest("recommendations title present (" + mode + ")", false,
+                 "'You Might Also Like' not found in the view tree");
+    }
+    else
+    {
+      std::vector<float> ops;
+      CollectAncestorOpacities(recsLeaf, fx.rootView, ops);
+      bool anyZero = std::any_of(ops.begin(), ops.end(), [](float o) { return o < 0.001f; });
+      ReportTest("recommendations entrance animation plays (" + mode + ")", anyZero,
+                 "no view at opacity 0 — the new section's entrance float never started");
+    }
+
+    // (c) the recommendations content actually rendered
+    View card = FindLabelByText(fx.rootView, "Cool Hand Luke");
+    ReportTest("recommendations cards rendered (" + mode + ")", !!card,
+               "'Cool Hand Luke' card not found in the view tree");
+  }
+  catch(const Dali::DaliException& e)
+  {
+    auto safe = [](const char* str) { return str ? std::string(str) : std::string("(null)"); };
+    ReportTest("stagger replay guard (" + mode + ")", false,
+               "DaliException: " + safe(e.condition) + " at " + safe(e.location));
+  }
+  catch(const std::exception& e)
+  {
+    ReportTest("stagger replay guard (" + mode + ")", false,
+               std::string("exception: ") + e.what());
+  }
+}
+
 class TestApp : public Dali::ConnectionTracker
 {
 public:
@@ -453,6 +585,82 @@ private:
 
     RunAllTests(mRoot);
 
+
+    // The stagger-replay guard needs the main loop between its two stages
+    // (batch-1 entrance animations must run to completion before batch 2 is
+    // fed), so it runs as a timer-driven fixture AFTER the synchronous suites.
+    mFixtureModes = {FeedMode::Incremental, FeedMode::String};
+    StartNextStaggerFixture();
+    (void)app;
+  }
+
+
+  void StartNextStaggerFixture()
+  {
+    if(mFixtureModeIndex >= mFixtureModes.size())
+    {
+      FinishAll();
+      return;
+    }
+
+    std::cout << "\n=== Stagger replay guard (" << ModeName(mFixtureModes[mFixtureModeIndex])
+              << ") ===" << std::endl;
+
+    mFixture         = std::make_unique<StaggerReplayFixture>();
+    mFixture->mode   = mFixtureModes[mFixtureModeIndex];
+    mFixture->e2eDir = mRoot + "/test/e2e/";
+    mFixture->host.GetRenderer().SetImageDir(gImageDir);
+
+    // The fixture's root view MUST be added to the window: DALi animations
+    // only progress for on-stage actors, and this test's assertions depend
+    // on entrance animations running to completion (BAKE -> opacity 1).
+    mFixture->host.SetOnBeginRenderingSurface(
+      [this](const std::string&, View view) {
+        mFixture->rootView = view;
+        mApplication.GetWindow().Add(view);
+      });
+
+    try
+    {
+      FeedFixture(*mFixture, "movie-detail-batch.jsonl");
+    }
+    catch(const std::exception& e)
+    {
+      ReportTest(std::string("stagger fixture batch-1 (") + ModeName(mFixture->mode) + ")",
+                 false, std::string("exception: ") + e.what());
+      AdvanceStaggerFixture();
+      return;
+    }
+
+    // Let batch-1's entrance animations run to completion (BAKE restores
+    // opacity 1) — a batch-2 replay is then detectable as opacity 0.
+    mFixture->pumpTimer = Dali::Timer::New(1800);
+    mFixture->pumpTimer.TickSignal().Connect(this, &TestApp::OnStaggerStage2);
+    mFixture->pumpTimer.Start();
+
+  }
+
+  bool OnStaggerStage2()
+  {
+    RunStaggerStage2(*mFixture);
+    AdvanceStaggerFixture();
+    return false; // one-shot
+  }
+
+  void AdvanceStaggerFixture()
+  {
+
+    if(mFixture && mFixture->rootView)
+    {
+      mApplication.GetWindow().Remove(mFixture->rootView);
+    }
+    mFixture.reset();
+    ++mFixtureModeIndex;
+    StartNextStaggerFixture();
+  }
+
+  void FinishAll()
+  {
     std::cout << "\n========================================" << std::endl;
     std::cout << "  RESULTS: " << gPassed << "/" << gTotal << " passed" << std::endl;
     std::cout << "========================================" << std::endl;
@@ -462,7 +670,6 @@ private:
     mQuitTimer = Dali::Timer::New(1);
     mQuitTimer.TickSignal().Connect(this, &TestApp::OnQuitTick);
     mQuitTimer.Start();
-    (void)app;
   }
 
   bool OnQuitTick()
@@ -474,6 +681,10 @@ private:
   Dali::Application& mApplication;
   std::string        mRoot;
   Dali::Timer        mQuitTimer;
+
+  std::vector<FeedMode>                 mFixtureModes;
+  std::size_t                           mFixtureModeIndex = 0;
+  std::unique_ptr<StaggerReplayFixture> mFixture;
 };
 } // namespace
 

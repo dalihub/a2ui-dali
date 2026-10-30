@@ -74,19 +74,48 @@ const std::unordered_map<std::string, uint32_t>& BundledComposerWeb()
   return kPalette;
 }
 
-bool UseComposerPalette()
+// OneUI dark palette — values copied from OneUI's official oneui_color.json (dark theme).
+const std::unordered_map<std::string, uint32_t>& BundledOneUIDark()
+{
+  static const std::unordered_map<std::string, uint32_t> kPalette = {
+    {"Primary", 0x387AFF},
+    {"PrimaryHigh", 0x2E65D4},
+    {"Background", 0x010102},
+    {"BackgroundApp", 0x131315},
+    {"Surface", 0x1C1C1E},
+    {"SurfaceContainerLow", 0x252528},
+    {"SurfaceContainer", 0x3A3A3D},
+    {"SurfaceContainerHigh", 0x4D4D52},
+    {"SurfaceContainerSemi", 0x3A3A3D},
+    {"OnSurfaceContainerHighest", 0xFFFFFF},
+    {"OnSurfaceContainer", 0xD6D6D8},
+    {"OnSurfaceContainerLow", 0xB7B7BB},
+    {"OnSurfaceContainerFixed", 0xFCFCFF},
+    {"Outline", 0x636368},
+    {"OutlineLow", 0x434348},
+    {"Red", 0xF64141},
+    {"Green", 0x0BB075},
+  };
+  return kPalette;
+}
+
+// A2UI_THEME selects the palette: unset = composer web (gallery parity),
+// "oneui" = OneUI light, "oneui-dark" = OneUI dark.
+const std::unordered_map<std::string, uint32_t>& ActivePalette()
 {
   const char* t = std::getenv("A2UI_THEME");
-  return !(t && std::strcmp(t, "oneui") == 0); // default = composer web parity
+  if(t && std::strcmp(t, "oneui-dark") == 0) return BundledOneUIDark();
+  if(t && std::strcmp(t, "oneui") == 0) return BundledOneUILight();
+  return BundledComposerWeb();
 }
 } // namespace
 
 UiColor A2uiTheme::Color(const std::string& id)
 {
   // Target A (live composer) is the active styling reference: resolve from the
-  // composer-web palette by default; A2UI_THEME=oneui restores the OneUI look.
+  // composer-web palette by default (see ActivePalette for the overrides).
   // Call sites are unchanged — they still ask by semantic colour id.
-  const auto& palette = UseComposerPalette() ? BundledComposerWeb() : BundledOneUILight();
+  const auto& palette = ActivePalette();
   auto it = palette.find(id);
   if(it != palette.end())
   {
