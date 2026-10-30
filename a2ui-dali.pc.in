@@ -8,4 +8,4 @@ Description: DALi-based renderer for the A2UI protocol
 Version: @PROJECT_VERSION@
 Requires: dali2-core dali2-adaptor dali2-ui-foundation dali2-ui-components
 Libs: -L${libdir} -la2ui-dali
-Cflags: -I${includedir}/a2ui-dali
+Cflags: -I${includedir}/a2ui-dali -I${includedir}/a2ui-dali/third_party

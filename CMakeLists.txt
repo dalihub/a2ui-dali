@@ -42,12 +42,33 @@ SET(A2UI_CORE_SOURCES
   src/core/template-cache.cpp
 )
 
+# Stream: AGenUI-style streaming pipeline (ProtocolStreamExtractor, plugins,
+# StreamingContentParser with IStreamEventSink).  These replace the older
+# core/protocol-stream-extractor.cpp and core/streaming-content-parser.cpp
+# which had the same class names but incompatible APIs.
+SET(A2UI_STREAM_SOURCES
+  src/stream/protocol-stream-extractor.cpp
+  src/stream/streaming-content-parser.cpp
+  src/stream/markdown-stream-plugin.cpp
+  src/stream/text-stream-plugin.cpp
+  src/stream/composite-stream-plugin.cpp
+  src/stream/error-code.cpp
+)
+
+# Module: Thread manager (ported from AGenUI)
+SET(A2UI_MODULE_SOURCES
+  src/module/message-thread.cpp
+  src/module/thread-manager.cpp
+)
+
 # Renderer: DALi-side bindings.
 # One file per component renderer (renderer/components/*.cpp).
 FILE(GLOB A2UI_COMPONENT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/components/*.cpp)
 
 SET(A2UI_LIB_SOURCES
   ${A2UI_CORE_SOURCES}
+  ${A2UI_STREAM_SOURCES}
+  ${A2UI_MODULE_SOURCES}
   src/renderer/a11y-bridge.cpp
   src/renderer/a2ui-host.cpp
   src/renderer/a2ui-renderer.cpp
@@ -66,6 +87,7 @@ ADD_LIBRARY(a2ui-dali STATIC ${A2UI_LIB_SOURCES})
 
 TARGET_INCLUDE_DIRECTORIES(a2ui-dali PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party
   ${DALICORE_INCLUDE_DIRS}
   ${DALIADAPTOR_INCLUDE_DIRS}
   ${DALI_UI_FOUNDATION_INCLUDE_DIRS}
@@ -89,6 +111,13 @@ TARGET_LINK_LIBRARIES(a2ui-dali PUBLIC
   pthread
 )
 
+TARGET_COMPILE_OPTIONS(a2ui-dali PRIVATE
+  ${DALICORE_CFLAGS_OTHER}
+  ${DALIADAPTOR_CFLAGS_OTHER}
+  ${DALI_UI_FOUNDATION_CFLAGS_OTHER}
+  ${DALI_UI_COMPONENTS_CFLAGS_OTHER}
+)
+
 # Desktop (Ubuntu) build links against DALi installed under $DESKTOP_PREFIX.
 # Under gbs/RPM the deps are resolved via pkg-config from the system prefix,
 # and DESKTOP_PREFIX is unset, so only add this link path when it exists.
@@ -105,10 +134,10 @@ INCLUDE(GNUInstallDirs)
 
 INSTALL(TARGETS a2ui-dali ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
-# Public headers keep their "core/..." / "renderer/..." include prefixes.
-INSTALL(DIRECTORY src/core src/renderer
+# Public headers keep their "core/..." / "renderer/..." / "stream/..." include prefixes.
+INSTALL(DIRECTORY src/core src/renderer src/stream src/module src/third_party
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/a2ui-dali
-  FILES_MATCHING PATTERN "*.h")
+  FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
 
 CONFIGURE_FILE(a2ui-dali.pc.in ${CMAKE_CURRENT_BINARY_DIR}/a2ui-dali.pc @ONLY)
 INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/a2ui-dali.pc
@@ -146,6 +175,38 @@ IF(DEFINED ENV{DESKTOP_PREFIX})
 ENDIF()
 
 SET_TARGET_PROPERTIES(${TEST_NAME} PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+)
+
+# ============================================================
+# Stream parser test: src/stream + core model, no display
+# ============================================================
+# Also links the core model (like the conformance test) to check the data model with the
+# renderer's real A2uiMessageProcessor / DataModel.
+ADD_EXECUTABLE(a2ui-stream-parser-test
+  test/stream-parser-test.cpp
+  ${A2UI_STREAM_SOURCES}
+  ${A2UI_CORE_SOURCES}
+)
+TARGET_INCLUDE_DIRECTORIES(a2ui-stream-parser-test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party
+  ${DALICORE_INCLUDE_DIRS}
+  ${DALIADAPTOR_INCLUDE_DIRS}
+  ${DALI_UI_FOUNDATION_INCLUDE_DIRS}
+)
+TARGET_LINK_LIBRARIES(a2ui-stream-parser-test
+  ${DALICORE_LIBRARIES}
+  ${DALIADAPTOR_LIBRARIES}
+  ${DALI_UI_FOUNDATION_LIBRARIES}
+  pthread
+)
+IF(DEFINED ENV{DESKTOP_PREFIX})
+  TARGET_LINK_DIRECTORIES(a2ui-stream-parser-test PRIVATE
+    $ENV{DESKTOP_PREFIX}/lib
+  )
+ENDIF()
+SET_TARGET_PROPERTIES(a2ui-stream-parser-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
 )
 
@@ -193,6 +254,16 @@ SET_TARGET_PROPERTIES(a2ui-custom-component PROPERTIES
 )
 
 # ============================================================
+# Example: examples/streaming-parser — StreamingContentParser + IStreamEventSink
+# No DALi display needed; feeds a JSON file in chunks and prints parsed events.
+# ============================================================
+ADD_EXECUTABLE(a2ui-streaming-parser examples/streaming-parser/main.cpp)
+TARGET_LINK_LIBRARIES(a2ui-streaming-parser a2ui-dali)
+SET_TARGET_PROPERTIES(a2ui-streaming-parser PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+)
+
+# ============================================================
 # Install: example binaries + runtime data (Tizen/gbs packaging)
 # ============================================================
 # The renderer resolves images via a relative "res/" path
@@ -201,6 +272,8 @@ SET_TARGET_PROPERTIES(a2ui-custom-component PROPERTIES
 #   cd ${CMAKE_INSTALL_DATADIR}/a2ui-dali && a2ui-gallery-demo screens
 OPTION(A2UI_INSTALL_EXAMPLES "Install example binaries and runtime resources" ON)
 IF(A2UI_INSTALL_EXAMPLES)
+  # a2ui-streaming-parser is a developer example and is deliberately not installed
+  # (packaging/a2ui-dali.spec does not ship it).
   INSTALL(TARGETS a2ui-basic-renderer a2ui-gallery-demo a2ui-custom-component
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
