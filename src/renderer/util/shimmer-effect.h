@@ -28,9 +28,9 @@ namespace A2ui {
 /**
  * @brief ShimmerEffect creates a shimmer skeleton-screen loading animation.
  *
- * BuildOverlay() returns a self-contained View with a looping shimmer
- * animation already playing. The caller adds the returned View to the
- * scene graph wherever a shimmer placeholder is needed.
+ * BuildOverlay() returns a self-contained View and its looping shimmer
+ * animation, not yet playing. The caller adds the View to the scene graph
+ * wherever a shimmer placeholder is needed and decides when it plays.
  *
  * The returned View uses WRAP_CONTENT + FlexGrow(1.0) so it fills the
  * parent's remaining main-axis space. The gradient overlay uses a fixed
@@ -56,10 +56,11 @@ class ShimmerEffect {
    * The container's CLIP_TO_BOUNDING_BOX clips the gradient to the actual
    * visible area.
    *
+   * @param[out] animation The looping sweep animation (not started).
    * @return A View containing the shimmer animation, ready to be added to
    *         the scene graph.
    */
-  static Dali::Ui::View BuildOverlay();
+  static Dali::Ui::View BuildOverlay(Dali::Animation& animation);
 };
 
 }  // namespace A2ui

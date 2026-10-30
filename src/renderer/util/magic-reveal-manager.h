@@ -64,6 +64,9 @@ class MagicRevealManager : public Dali::ConnectionTracker {
   /// Called when a registered ImageView's resource becomes ready.
   void OnResourceReady(Dali::Ui::View view);
 
+  /// Drops entries with nothing left to do, so finished images are released.
+  void Prune();
+
   /// Starts the reveal (immediately or after the stagger delay).
   void StartReveal(size_t index);
 

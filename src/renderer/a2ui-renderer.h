@@ -206,6 +206,11 @@ private:
   /// @param floatOffsetDp Distance (dp) the view starts below its final position.
   void FloatInView(Dali::Ui::View view, float fadeSec = 0.5f, float floatOffsetDp = 16.0f);
 
+  /// Play a looping animation only while @p view is on the scene. A looping animation
+  /// never finishes, and DALi keeps a playing one alive (and the frame loop busy) after
+  /// its view has been removed, so it is stopped on disconnection.
+  void LoopWhileOnScene(Dali::Ui::View view, Dali::Animation animation);
+
   // === Remote / keyboard focus ===
   /// Make @p view reachable by the TV remote: mark it keyboard-focusable so the
   /// FocusManager can move focus onto it, and run @p onActivate when the focused

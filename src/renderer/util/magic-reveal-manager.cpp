@@ -7,6 +7,8 @@
 
 #include "renderer/util/magic-reveal-manager.h"
 
+#include <algorithm>
+
 #include <dali-ui-foundation/public-api/visuals/visual-properties.h>
 #include <dali/integration-api/debug.h>
 
@@ -21,6 +23,8 @@ void MagicRevealManager::Register(Dali::Ui::ImageView imageView,
   if (!imageView) {
     return;
   }
+
+  Prune();
 
   // Avoid duplicate registration
   for (auto& e : mEntries) {
@@ -64,6 +68,29 @@ void MagicRevealManager::Unregister(Dali::Ui::ImageView imageView) {
       return;
     }
   }
+}
+
+void MagicRevealManager::Prune() {
+  // Entries are addressed by index from pending delay timers, so only compact
+  // the list when none is pending.
+  for (const auto& e : mEntries) {
+    if (e.delayTimer) {
+      return;
+    }
+  }
+  // Drop entries with nothing left to do: the reveal has run, or the image view
+  // is referenced by this list alone (its view tree is gone). Without this every
+  // image the renderer ever built stays alive for the renderer's lifetime.
+  mEntries.erase(
+      std::remove_if(mEntries.begin(), mEntries.end(),
+                     [](const Entry& e) {
+                       if (e.effect && e.effect->IsActive()) {
+                         return false;
+                       }
+                       return e.revealed ||
+                              e.imageView.GetBaseObject().ReferenceCount() == 1;
+                     }),
+      mEntries.end());
 }
 
 void MagicRevealManager::Clear() {

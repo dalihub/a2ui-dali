@@ -107,9 +107,6 @@ void MagicRevealEffect::BuildOverlay() {
   float width = targetSize.x > 0.0f ? targetSize.x : 300.0f;
   float height = targetSize.y > 0.0f ? targetSize.y : 200.0f;
 
-  DALI_LOG_ERROR("[A2UI][magic-reveal] width=%.2f height=%.2f\n", width,
-                 height);
-
   float diagonal = DiagonalLength(width, height);
 
   // Overlay is larger than the container so it can fully cover it at any

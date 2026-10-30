@@ -23,7 +23,7 @@ View A2uiRenderer::RenderView(const ComponentModel& comp, DataContext& ctx)
   pulse.AnimateTo(Property(view, Actor::Property::OPACITY), 0.4f);
   pulse.SetLooping(true);
   pulse.SetLoopingMode(Animation::AUTO_REVERSE);
-  pulse.Play();
+  LoopWhileOnScene(view, pulse);
   return view;
 }
 } // namespace A2ui

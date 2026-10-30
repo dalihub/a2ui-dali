@@ -85,9 +85,10 @@ class MagicRevealEffect : public Dali::ConnectionTracker {
   void Stop();
 
   /**
-   * @brief Returns true if the reveal animation is currently active.
+   * @brief Returns true from Start() until the reveal finishes or is stopped
+   *        (covers the deferred overlay build as well as the animation).
    */
-  bool IsActive() const { return static_cast<bool>(mAnimation); }
+  bool IsActive() const { return static_cast<bool>(mTarget); }
 
  private:
   /// Called by the deferred timer to build the overlay once layout is done.

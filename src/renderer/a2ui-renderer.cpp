@@ -242,7 +242,9 @@ View A2uiRenderer::RenderComponent(const std::string& id,
   {
     DALI_LOG_ERROR("[A2UI] Renderer: Component '%s' not found\n", id.c_str());
     // Shimmer loading animation as the placeholder
-    View placeholder = ShimmerEffect::BuildOverlay();
+    Dali::Animation shimmer;
+    View            placeholder = ShimmerEffect::BuildOverlay(shimmer);
+    LoopWhileOnScene(placeholder, shimmer);
     mDiffEngine.RegisterView(id, placeholder);
     // Remember this cached view is only a shimmer placeholder, so the
     // stagger-reveal treats the component's first REAL render as its first
@@ -877,12 +879,21 @@ void A2uiRenderer::FloatInView(View view, float fadeSec, float floatOffsetDp)
 
 
 // ========================================================================
-// Incremental rendering (AI-generated)
+// Incremental rendering
 // ========================================================================
+
+void A2uiRenderer::LoopWhileOnScene(View view, Dali::Animation animation)
+{
+  if(!view || !animation) return;
+  view.SceneConnectedSignal().Connect(this, [animation](Dali::Actor) mutable { animation.Play(); });
+  view.SceneDisconnectedSignal().Connect(this, [animation](Dali::Actor) mutable { animation.Stop(); });
+  if(view.GetProperty<bool>(Dali::Actor::Property::CONNECTED_TO_SCENE)) animation.Play();
+}
 
 void A2uiRenderer::InvalidateRenderState()
 {
   mDiffEngine.Clear();
+  mRenderedSurfaceId.clear();
   mComponentWatchers.clear();
   mWatchScope.reset();
   // A new surface re-renders everything from scratch — forget which component

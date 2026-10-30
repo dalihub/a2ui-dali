@@ -44,7 +44,7 @@ namespace A2ui {
 // screen width; the container clips the gradient to its actual bounds.
 static constexpr float SHIMMER_REF_WIDTH = 1920.0f;
 
-Ui::View ShimmerEffect::BuildOverlay() {
+Ui::View ShimmerEffect::BuildOverlay(Animation& animation) {
   // Create the clipping container: WRAP_CONTENT + FlexGrow fills the parent's
   // remaining main-axis space without overflowing or pushing siblings.
   // CLIP_TO_BOUNDING_BOX clips the gradient child to the container's bounds.
@@ -113,7 +113,7 @@ Ui::View ShimmerEffect::BuildOverlay() {
                         Vector3(0.0f, 0.0f, 0.1f));
 
   // EASE_IN_OUT matches Android's AccelerateDecelerateInterpolator.
-  Animation animation = Animation::New(ShimmerEffect::SHIMMER_DURATION);
+  animation = Animation::New(ShimmerEffect::SHIMMER_DURATION);
   animation.AnimateTo(Property(gradient, Actor::Property::POSITION),
                        Vector3(SHIMMER_REF_WIDTH, 0.0f, 0.1f),
                        AlphaFunction::EASE_IN_OUT);
@@ -121,7 +121,6 @@ Ui::View ShimmerEffect::BuildOverlay() {
   animation.SetLoopingMode(Animation::RESTART);
   animation.SetEndAction(Animation::BAKE_FINAL);
   animation.SetDisconnectAction(Animation::DISCARD);
-  animation.Play();
 
   return container;
 }
