@@ -43,9 +43,8 @@ SET(A2UI_CORE_SOURCES
 )
 
 # Stream: AGenUI-style streaming pipeline (ProtocolStreamExtractor, plugins,
-# StreamingContentParser with IStreamEventSink).  These replace the older
-# core/protocol-stream-extractor.cpp and core/streaming-content-parser.cpp
-# which had the same class names but incompatible APIs.
+# StreamingContentParser with IStreamEventSink). Not wired into A2uiHost yet;
+# the host still reads complete JSONL lines through core/a2ui-stream-parser.
 SET(A2UI_STREAM_SOURCES
   src/stream/protocol-stream-extractor.cpp
   src/stream/streaming-content-parser.cpp
