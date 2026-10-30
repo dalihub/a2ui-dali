@@ -146,6 +146,8 @@ void A2uiHost::FeedLine(const std::string& rawLine, bool deferRender)
 
   if(info.isDelete)
   {
+    // A surface re-created under the same id must start from a full render.
+    if(mRenderer.GetRenderedSurfaceId() == info.surfaceId) mRenderer.InvalidateRenderState();
     if(mOnDelete) mOnDelete(info.surfaceId);
     mSurfaces.DeleteSurface(info.surfaceId);
     return;
@@ -183,6 +185,5 @@ void A2uiHost::RenderSurface(const std::string& surfaceId, SurfaceModel& surface
     mOnRender(surfaceId, view);
   }
 }
-
 
 } // namespace A2ui

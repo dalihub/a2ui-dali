@@ -556,14 +556,22 @@ void A2uiRenderer::BuildTemplateChildren(const std::string& templateId,
 
     std::shared_ptr<WatchScope> saved = self->mWatchScope;
     self->mWatchScope                 = own; // items register into this generation
-    for(int i = 0; i < count; ++i)
     {
-      DataContext itemCtx = scope.CreateCollectionItemContext(base + "/" + std::to_string(i), i);
-      View        item    = self->RenderComponent(templateId, *comps, itemCtx);
-      if(item)
+      // Every item is a fresh instance of the template. Partial render mode would hand
+      // back the one cached view registered under the template id for each index, and
+      // re-adding that single view leaves the list with only its last item.
+      PartialRenderStateGuard itemGuard(self->mPartialRenderMode, self->mPartialRenderIds);
+      self->mPartialRenderMode = false;
+      self->mPartialRenderIds.clear();
+      for(int i = 0; i < count; ++i)
       {
-        prepareItem(item, i);
-        container.Add(item);
+        DataContext itemCtx = scope.CreateCollectionItemContext(base + "/" + std::to_string(i), i);
+        View        item    = self->RenderComponent(templateId, *comps, itemCtx);
+        if(item)
+        {
+          prepareItem(item, i);
+          container.Add(item);
+        }
       }
     }
     self->mWatchScope = saved;
@@ -884,11 +892,14 @@ void A2uiRenderer::InvalidateRenderState()
 
 View A2uiRenderer::RenderIncremental(SurfaceModel& surface)
 {
-  // No previous render → full render
-  if(!IsRendered())
+  // No previous render of THIS surface → full render. The incremental state is keyed
+  // by component id only, so another surface's "root" must not be taken for this one's.
+  if(!IsRendered() || mRenderedSurfaceId != surface.GetSurfaceId())
   {
-    std::printf("[A2UI] *** Full render ***\n");
-    return Render(surface);
+    InvalidateRenderState();
+    View view = Render(surface);
+    if(view) mRenderedSurfaceId = surface.GetSurfaceId();
+    return view;
   }
 
   const SurfaceComponentsModel& components = surface.GetComponentsModel();
@@ -899,11 +910,9 @@ View A2uiRenderer::RenderIncremental(SurfaceModel& surface)
   {
     if(id == "root")
     {
-      std::printf("[A2UI] *** Full render ***\n");
       return Render(surface);
     }
   }
-  std::printf("[A2UI] *** RenderIncremental ***\n");
   // Configure action dispatcher (same as full Render)
   mActionDispatcher.SetSurfaceId(surface.GetSurfaceId());
   mActionDispatcher.SetSendDataModel(surface.GetSendDataModel());
@@ -1060,16 +1069,9 @@ void A2uiRenderer::UpdateOneComponent(SurfaceModel& surface, const std::string& 
       return;
     }
 
-    int index = components.GetChildIndexInParent(componentId);
-    if(index >= 0 && static_cast<uint32_t>(index) < parentView.GetChildViewCount())
-    {
-      parentView.Add(newView);
-    }
-    else
-    {
-      // Append at end (common case for template children growth)
-      parentView.Add(newView);
-    }
+    // Appended at the end. A container's view children need not map 1:1 to its
+    // childIds (wrappers, placeholders), so the model index is not a safe view slot.
+    parentView.Add(newView);
     // Leaf component: no parent re-render needed — the Add above is sufficient.
 
     // Float-in the newly added component with an upward-floating animation,
@@ -1162,16 +1164,24 @@ void A2uiRenderer::RerenderParent(SurfaceModel& surface, const std::string& pare
   View parentOldView = mDiffEngine.GetView(parentId);
   if(!parentOldView) return;
 
-  // Retire watchers for the parent AND all its descendants (the re-render
-  // rebuilds the whole subtree).
+  // Retire the watchers of every component this re-render rebuilds. With a changed
+  // child (partial render) that is only the parent and that child: the siblings keep
+  // their existing views, and those views still need their bindings.
   RetireComponentWatchers(surface.GetDataModel(), parentId);
-  for(const auto& cid : parentComp->childIds)
+  if(!changedChildId.empty())
   {
-    RetireComponentWatchers(surface.GetDataModel(), cid);
+    RetireComponentWatchers(surface.GetDataModel(), changedChildId);
   }
-  if(!parentComp->childId.empty())
+  else
   {
-    RetireComponentWatchers(surface.GetDataModel(), parentComp->childId);
+    for(const auto& cid : parentComp->childIds)
+    {
+      RetireComponentWatchers(surface.GetDataModel(), cid);
+    }
+    if(!parentComp->childId.empty())
+    {
+      RetireComponentWatchers(surface.GetDataModel(), parentComp->childId);
+    }
   }
 
   // Partial render mode: when changedChildId is specified, only the parent and

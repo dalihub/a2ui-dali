@@ -68,6 +68,11 @@ public:
   /// Reset render state so next call goes through full Render().
   void InvalidateRenderState();
 
+  /// Surface whose views the incremental state (DiffEngine, watchers) describes; empty when
+  /// nothing is rendered. Component ids ("root" included) repeat across surfaces, so that
+  /// state is only valid for this one surface.
+  const std::string& GetRenderedSurfaceId() const { return mRenderedSurfaceId; }
+
 
   /// How many tap targets the renderer is holding alive (diagnostics — a list that rebuilds
   /// without releasing its old detectors shows up here as a count that keeps climbing).
@@ -292,6 +297,7 @@ private:
   ExpressionParser   mExprParser;
   ActionDispatcher   mActionDispatcher;
   DiffEngine         mDiffEngine;
+  std::string        mRenderedSurfaceId;
   ViewPool           mViewPool;
 
   // Owns TapGestureDetector handles for the current surface. dali-ui has no

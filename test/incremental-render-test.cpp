@@ -22,6 +22,8 @@
  *   2. Subsequent updateComponents (non-root) trigger RenderIncremental
  *   3. The text rendered after an incremental update is correct
  *   4. The root view object identity is preserved across incremental updates
+ *   5. Surfaces sharing component ids keep separate views, siblings of a re-rendered
+ *      parent keep their data bindings, and a re-sent template List keeps every item
  *
  * Needs a display (builds actual DALi actors) — run it under Xvfb:
  *   tools/run-tests.sh
@@ -38,6 +40,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -225,6 +228,118 @@ void TestRenderState(A2ui::A2uiHost& host, View& /*rootView*/)
 }
 
 
+std::string Joined(View root)
+{
+  std::string out;
+  for(const std::string& t : GetTexts(root)) out += (out.empty() ? "" : ",") + t;
+  return out;
+}
+
+// ========================================================================
+// Test 4: Two surfaces both have a "root". A non-root update to the first
+//         surface must render the first surface, not the second one's tree.
+// ========================================================================
+void TestTwoSurfaces(A2ui::A2uiHost& host, std::map<std::string, View>& views)
+{
+  std::cout << "\n=== Test: Two Surfaces ===" << std::endl;
+
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"twoA","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"twoA","components":[
+    {"id":"root","component":"Column","children":["a1"]},
+    {"id":"a1","component":"Text","text":"A-one"}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"twoB","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"twoB","components":[
+    {"id":"root","component":"Column","children":["b1"]},
+    {"id":"b1","component":"Text","text":"B-one"}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"twoA","components":[
+    {"id":"a1","component":"Text","text":"A-two"}
+  ]}})");
+
+  ReportTest("surface A shows its own update", Joined(views["twoA"]) == "A-two",
+             "got '" + Joined(views["twoA"]) + "'");
+  ReportTest("surface B is untouched", Joined(views["twoB"]) == "B-one",
+             "got '" + Joined(views["twoB"]) + "'");
+  ReportTest("surfaces keep separate views", views["twoA"] != views["twoB"],
+             "both surfaces were handed the same view");
+
+  // Re-creating a deleted surface under the same id starts from a full render.
+  host.JsonFeed(R"({"version":"v0.9","deleteSurface":{"surfaceId":"twoB"}})");
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"twoB","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"twoB","components":[
+    {"id":"root","component":"Column","children":["b2"]},
+    {"id":"b2","component":"Text","text":"B-new"}
+  ]}})");
+  ReportTest("re-created surface renders only its new tree", Joined(views["twoB"]) == "B-new",
+             "got '" + Joined(views["twoB"]) + "'");
+}
+
+// ========================================================================
+// Test 5: Re-rendering a parent for one changed child keeps the unchanged
+//         siblings bound to the data model.
+// ========================================================================
+void TestSiblingBindings(A2ui::A2uiHost& host, std::map<std::string, View>& views)
+{
+  std::cout << "\n=== Test: Sibling Bindings Survive A Parent Re-render ===" << std::endl;
+
+  // Sibling updated after the first render.
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"sib","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"sib","components":[
+    {"id":"root","component":"Column","children":["sec"]},
+    {"id":"sec","component":"Column","children":["price","status"]},
+    {"id":"price","component":"Text","text":{"path":"/price"}},
+    {"id":"status","component":"Text","text":"pending"}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"sib","path":"/price","value":"100"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"sib","components":[
+    {"id":"status","component":"Text","text":"done"}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"sib","path":"/price","value":"200"}})");
+  ReportTest("updated sibling: bound text follows the data model", Joined(views["sib"]) == "200,done",
+             "got '" + Joined(views["sib"]) + "'");
+
+  // Sibling arriving late (the streaming order).
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"late","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"late","components":[
+    {"id":"root","component":"Column","children":["sec"]},
+    {"id":"sec","component":"Column","children":["price","status"]},
+    {"id":"price","component":"Text","text":{"path":"/price"}}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"late","path":"/price","value":"100"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"late","components":[
+    {"id":"status","component":"Text","text":"in stock"}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"late","path":"/price","value":"200"}})");
+  ReportTest("late sibling: bound text follows the data model", Joined(views["late"]) == "200,in stock",
+             "got '" + Joined(views["late"]) + "'");
+}
+
+// ========================================================================
+// Test 6: Re-sending a template List keeps one view per data item.
+// ========================================================================
+void TestListResend(A2ui::A2uiHost& host, std::map<std::string, View>& views)
+{
+  std::cout << "\n=== Test: Template List Re-sent ===" << std::endl;
+
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"lst","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"lst","components":[
+    {"id":"root","component":"Column","children":["hdr","list"]},
+    {"id":"hdr","component":"Text","text":"Items"},
+    {"id":"list","component":"List","children":{"componentId":"item","path":"/items"}},
+    {"id":"item","component":"Text","text":{"path":"name"}}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateDataModel":{"surfaceId":"lst","path":"/items","value":[{"name":"a"},{"name":"b"},{"name":"c"}]}})");
+  ReportTest("list shows every item", Joined(views["lst"]) == "Items,a,b,c",
+             "got '" + Joined(views["lst"]) + "'");
+
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"lst","components":[
+    {"id":"list","component":"List","children":{"componentId":"item","path":"/items"}}
+  ]}})");
+  ReportTest("re-sent list still shows every item", Joined(views["lst"]) == "Items,a,b,c",
+             "got '" + Joined(views["lst"]) + "'");
+}
+
 } // anonymous namespace
 
 class TestApp : public Dali::ConnectionTracker
@@ -245,13 +360,17 @@ private:
 
     // Set up the host with a render callback that captures the root view
     mHost.GetRenderer().SetImageDir("res/");
-    mHost.SetOnBeginRenderingSurface([this](const std::string&, View view) {
-      mRootView = view;
+    mHost.SetOnBeginRenderingSurface([this](const std::string& surfaceId, View view) {
+      mRootView         = view;
+      mViews[surfaceId] = view;
     });
 
     TestIncrementalTextUpdate(mHost, mRootView);
     TestIncrementalComponentAdd(mHost, mRootView);
     TestRenderState(mHost, mRootView);
+    TestTwoSurfaces(mHost, mViews);
+    TestSiblingBindings(mHost, mViews);
+    TestListResend(mHost, mViews);
 
     std::cout << "\n========================================" << std::endl;
     std::cout << "  RESULTS: " << gPassed << "/" << gTotal << " passed" << std::endl;
@@ -274,6 +393,7 @@ private:
   Dali::Application& mApplication;
   A2ui::A2uiHost     mHost;
   View               mRootView;
+  std::map<std::string, View> mViews;
   Dali::Timer        mQuitTimer;
 };
 
