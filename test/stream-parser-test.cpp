@@ -22,14 +22,18 @@
  * parser unsplit, split at every 2-way position, and byte by byte. For each run the
  * emitted events are applied to a small reference model (surface lifecycle,
  * components by id, data model per surface) and compared with the model obtained by
- * applying the original messages directly. This checks, for any chunking:
+ * applying the original messages directly. The data model is checked twice: in a small
+ * nlohmann-based reference model and in the renderer's real A2uiMessageProcessor /
+ * DataModel (no display needed). This checks, for any chunking:
  *   - every emitted event is valid JSON with valid UTF-8 (no split escape /
  *     surrogate / multi-byte sequence leaks out of streamed text);
  *   - the order of message kinds matches the source;
  *   - createSurface / deleteSurface messages arrive exactly once, unchanged;
  *   - components converge to the source components;
- *   - the data model converges to the one the unsplit messages produce;
- *   - "version" is preserved (or stays absent) on every event.
+ *   - the data model converges to the one the unsplit messages produce, also under the
+ *     renderer's own rules (e.g. "value":null deletes);
+ *   - "version" is preserved (or stays absent) on every event;
+ *   - malformed messages are passed through exactly as unsplit, and parsing is linear.
  *
  *   ./a2ui-stream-parser-test [repo-root] [-v]
  *
@@ -41,15 +45,19 @@
 #include "stream/protocol-stream-extractor.h"
 #include "stream/stream-event-sink.h"
 #include "stream/error-code.h"
+#include "core/a2ui-message-processor.h"
+#include "core/surface-model.h"
 
 #include "nlohmann/json.hpp"
 
 #include <cstdio>
 #include <dirent.h>
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -120,6 +128,13 @@ static std::vector<Event> RunChunks(const std::vector<std::string>& chunks)
   return sink.events;
 }
 
+static std::vector<std::string> Chunk(const std::string& s, size_t n)
+{
+  std::vector<std::string> chunks;
+  for(size_t i = 0; i < s.size(); i += n) chunks.push_back(s.substr(i, n));
+  return chunks;
+}
+
 // ========================================================================
 // Reference model
 // ========================================================================
@@ -134,6 +149,7 @@ struct Model
   std::map<std::string, json> data;                                 // surfaceId -> data model
   std::set<std::string> versions;                                   // "kind|version"
   std::vector<std::string> kinds;                                   // message kinds, consecutive runs collapsed
+  std::map<std::string, std::string> rendered;                      // surfaceId -> real renderer DataModel
   std::string error;                                                // first error, empty when consistent
 
   void Fail(const std::string& e)
@@ -253,7 +269,7 @@ static bool PointerApply(json& root, const std::string& path, const json& value,
     size_t idx = cur->size();
     if(last != "-" && !ParseIndex(last, idx)) { err = "bad index in " + path; return false; }
     if(idx > cur->size()) { err = "sparse index in " + path; return false; }
-    if(mode == 2) { if(idx < cur->size()) cur->erase(idx); return true; }
+    if(mode == 2) { if(idx < cur->size()) (*cur)[idx] = nullptr; return true; } // slot emptied, length kept
     if(mode == 1)
     {
       if(idx >= cur->size() || !(*cur)[idx].is_string() || !value.is_string())
@@ -374,7 +390,9 @@ static void ApplyMessage(Model& m, const std::string& kind, const json& msg)
     }
     path = body["path"].get<std::string>();
   }
-  int mode = (kind == "appendDataModel") ? 1 : (body.contains("value") ? 0 : 2);
+  // Like the renderer: an omitted value or "value":null deletes
+  bool hasValue = body.contains("value") && !body["value"].is_null();
+  int mode = (kind == "appendDataModel") ? 1 : (hasValue ? 0 : 2);
   std::string err;
   if(!PointerApply(m.data[sid], path, body.contains("value") ? body["value"] : json(), mode, err) && !gLenient)
   {
@@ -382,9 +400,46 @@ static void ApplyMessage(Model& m, const std::string& kind, const json& msg)
   }
 }
 
+// Applies messages to the renderer's real message processor, one SurfaceModel per surface.
+// appendDataModel is not an A2UI message; it is emulated as "read string, write it back longer".
+struct RendererRun
+{
+  A2ui::A2uiMessageProcessor processor;
+  std::map<std::string, std::unique_ptr<A2ui::SurfaceModel>> surfaces;
+
+  void Apply(const std::string& kind, const json& msg, const std::string& raw)
+  {
+    if(!msg.contains(kind) || !msg[kind].is_object() || !msg[kind].contains("surfaceId")) return;
+    std::string sid = msg[kind]["surfaceId"].is_string() ? msg[kind]["surfaceId"].get<std::string>() : "";
+    auto& surface = surfaces[sid];
+    if(!surface) surface.reset(new A2ui::SurfaceModel());
+    if(kind == "appendDataModel")
+    {
+      const json& body = msg[kind];
+      std::string path = body.value("path", "/");
+      std::string current = surface->GetDataModel().GetString(path);
+      surface->GetDataModel().SetValue(path, current + body.value("value", ""));
+      return;
+    }
+    processor.ProcessLine(raw, *surface);
+  }
+
+  std::map<std::string, std::string> Dump() const
+  {
+    std::map<std::string, std::string> out;
+    for(const auto& s : surfaces)
+    {
+      json j = json::parse(s.second->GetDataModel().Serialize(), nullptr, false);
+      out[s.first] = j.is_discarded() ? "<unparsable>" : j.dump();
+    }
+    return out;
+  }
+};
+
 static Model ModelFromSource(const std::vector<std::string>& messages)
 {
   Model m;
+  RendererRun renderer;
   for(const auto& s : messages)
   {
     json j = json::parse(s, nullptr, false);
@@ -394,13 +449,16 @@ static Model ModelFromSource(const std::vector<std::string>& messages)
       continue;
     }
     ApplyMessage(m, KindOf(j), j);
+    renderer.Apply(KindOf(j), j, s);
   }
+  m.rendered = renderer.Dump();
   return m;
 }
 
 static Model ModelFromEvents(const std::vector<Event>& events)
 {
   Model m;
+  RendererRun renderer;
   for(const auto& e : events)
   {
     json j = json::parse(e.data, nullptr, false); // strict: rejects invalid UTF-8 and lone surrogates
@@ -410,7 +468,9 @@ static Model ModelFromEvents(const std::vector<Event>& events)
       continue;
     }
     ApplyMessage(m, e.type, j);
+    renderer.Apply(e.type, j, e.data);
   }
+  m.rendered = renderer.Dump();
   return m;
 }
 
@@ -461,6 +521,16 @@ static std::string CompareModels(const Model& want, const Model& got)
       if(g != s.second.dump()) return "data model of '" + s.first + "' = " + g.substr(0, 300) + " want " + s.second.dump().substr(0, 300);
     }
     return "extra data model emitted";
+  }
+  if(got.rendered != want.rendered)
+  {
+    for(const auto& s : want.rendered)
+    {
+      auto gr = got.rendered.find(s.first);
+      std::string g = (gr == got.rendered.end()) ? "<none>" : gr->second;
+      if(g != s.second) return "renderer data model of '" + s.first + "' = " + g.substr(0, 300) + " want " + s.second.substr(0, 300);
+    }
+    return "renderer: extra surfaces";
   }
   return "";
 }
@@ -643,6 +713,72 @@ static void TestDataModelStreaming()
   });
 }
 
+// The renderer deletes on "value":null and addresses keys with unescaped JSON-pointer
+// segments, so containers holding nulls or such keys must not be split member by member.
+static void TestNullsAndUnusualKeys()
+{
+  std::cout << "\n=== Test: nulls and unusual keys in streamed data model values ===" << std::endl;
+  CheckScenario("null members", {
+    kCreate,
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"keep":1,"x":{"y":2}}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/x","value":[1,null,3,{"a":4}]}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/o","value":{"k0":null,"k1":"v","k2":[null]}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/n","value":{"a":{"b":[1,{"c":null,"d":2}],"e":"f"},"g":[[null],[1]]}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/keep","value":null}})",
+  });
+  CheckScenario("empty, slash, tilde and numeric keys", {
+    kCreate,
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"keep":1,"x":{"y":2}}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/x","value":{"":{"k":1},"b":2}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"a":{"":1},"s/l":{"t~x":[1]},"7":{"q":"r"}}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/a","value":{"p":{"q":{"":"deep"}}}}})",
+  });
+}
+
+// A malformed updateDataModel must not stall the stream: like the unsplit path it is passed
+// through as received, and the messages after it still arrive.
+static void TestMalformedValue()
+{
+  std::cout << "\n=== Test: malformed updateDataModel value (pass-through, no stall) ===" << std::endl;
+  const std::vector<std::string> bad = {
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"a":1,"b":tru}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"a":[1,NaN]}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"a":"x\qy","b":2}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"a":1 "b":2}}})",
+    R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"a":{"b":nul}}}})",
+  };
+  const std::string after = R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/z","value":1}})";
+  for(size_t b = 0; b < bad.size(); ++b)
+  {
+    std::string stream = kCreate + "\n" + bad[b] + "\n" + after + "\n" + kDelete + "\n";
+    auto check = [&](const std::vector<Event>& events) -> std::string {
+      int raw = 0, creates = 0, deletes = 0, afters = 0;
+      for(const auto& e : events)
+      {
+        if(e.data == bad[b]) { raw++; continue; }
+        if(!json::accept(e.data)) return "invalid event: " + e.data.substr(0, 120);
+        if(e.type == "createSurface") creates++;
+        if(e.type == "deleteSurface") deletes++;
+        if(e.data == after) afters++;
+      }
+      if(raw != 1) return "malformed message delivered " + std::to_string(raw) + " times";
+      if(creates != 1 || deletes != 1 || afters != 1) return "messages after it were lost";
+      return "";
+    };
+    std::string name = "malformed value #" + std::to_string(b + 1);
+    std::string err = check(RunChunks({stream}));
+    ReportTest(name + " unsplit", err.empty(), err);
+    for(size_t i = 1; i < stream.size() && err.empty(); ++i)
+    {
+      err = check(RunChunks({stream.substr(0, i), stream.substr(i)}));
+      if(!err.empty()) err = "split at " + std::to_string(i) + ": " + err;
+    }
+    ReportTest(name + " every 2-way split", err.empty(), err);
+    err = check(RunChunks(Chunk(stream, 1)));
+    ReportTest(name + " byte-by-byte", err.empty(), err);
+  }
+}
+
 // #4: updateComponents without "version" (and with version after the payload).
 static void TestVersionHandling()
 {
@@ -736,6 +872,34 @@ static void TestProgressiveDelivery()
   ReportTest("synthesized data model events keep version", count(ev, "updateDataModel", "\"version\":\"v0.9\"") == count(ev, "updateDataModel", ""));
 }
 
+// Total work must stay linear in the input: a 1 MB message in 64-byte chunks is parsed in a few
+// milliseconds; rescanning the buffer from the start on every chunk takes seconds.
+static void TestLinearTime()
+{
+  std::cout << "\n=== Test: parsing time is linear in the input ===" << std::endl;
+  const size_t n = 1024 * 1024;
+  std::string members;
+  for(int i = 0; members.size() < n; ++i) members += (i ? ",\"k" : "\"k") + std::to_string(i) + "\":" + std::to_string(i);
+  struct Case { const char* name; std::string stream; };
+  std::vector<Case> cases = {
+    {"updateDataModel without version (delivered whole)", R"({"updateDataModel":{"surfaceId":"s","path":"/","value":{)" + members + "}}}\n"},
+    {"streamed updateDataModel", R"({"version":"v0.9","updateDataModel":{"surfaceId":"s","path":"/","value":{"z":")" + std::string(n, 'a') + "\"}}}\n"},
+    {"createSurface", R"({"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":")" + std::string(n, 'c') + "\"}}\n"},
+    {"long Text component", R"({"version":"v0.9","updateComponents":{"surfaceId":"s","components":[{"id":"t","component":"Text","text":")" + std::string(n, 't') + "\"}]}}\n"},
+    {"long Image component", R"({"version":"v0.9","updateComponents":{"surfaceId":"s","components":[{"id":"i","component":"Image","url":")" + std::string(n, 'u') + "\"}]}}\n"},
+  };
+  for(const auto& c : cases)
+  {
+    std::vector<std::string> chunks = Chunk(c.stream, 64);
+    auto t0 = std::chrono::steady_clock::now();
+    std::vector<Event> events = RunChunks(chunks);
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    // Generous bound: linear parsing needs ~10 ms here, the quadratic version 4-13 s.
+    ReportTest(std::string("1 MB ") + c.name + " in 64 B chunks under 1 s (" + std::to_string(static_cast<int>(ms)) + " ms)",
+               ms < 1000.0 && !events.empty());
+  }
+}
+
 // ========================================================================
 // Repo samples (JSON arrays of messages) streamed as JSONL
 // ========================================================================
@@ -763,13 +927,6 @@ static std::vector<std::string> ListDir(const std::string& dir, const std::strin
   closedir(d);
   std::sort(files.begin(), files.end());
   return files;
-}
-
-static std::vector<std::string> Chunk(const std::string& s, size_t n)
-{
-  std::vector<std::string> chunks;
-  for(size_t i = 0; i < s.size(); i += n) chunks.push_back(s.substr(i, n));
-  return chunks;
 }
 
 static void TestRepoSamples(const std::string& root)
@@ -875,6 +1032,9 @@ int main(int argc, char** argv)
   TestVersionHandling();
   TestTypeDetection();
   TestProgressiveDelivery();
+  TestNullsAndUnusualKeys();
+  TestMalformedValue();
+  TestLinearTime();
   TestRepoSamples(root);
 
   std::cout << "\n========================================" << std::endl;

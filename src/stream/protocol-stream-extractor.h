@@ -128,9 +128,21 @@ private:
         Type type;
         std::string pathPrefix;   // Accumulated path to reach this level
         int arrayIndex;           // Current element index in Array mode
+        size_t start;             // Buffer position of the container's '{' or '['
 
-        DmStackEntry(Type t, const std::string& path, int idx = 0)
-            : type(t), pathPrefix(path), arrayIndex(idx) {}
+        DmStackEntry(Type t, const std::string& path, int idx, size_t startPos)
+            : type(t), pathPrefix(path), arrayIndex(idx), start(startPos) {}
+    };
+
+    /**
+     * @brief Resumable state of a brace/bracket-depth scan (same rules as isJsonObjectComplete),
+     * so a value that arrives over many chunks is scanned only once in total.
+     */
+    struct ScanState {
+        size_t pos = 0;        // Next byte to examine
+        int depth = 0;
+        bool inString = false;
+        bool escaped = false;
     };
 
     /**
@@ -156,17 +168,24 @@ private:
     void discardUntilMessageStart();
     void consumeMessage(size_t endPos);
     void abandonMessageIfComplete(const char* reason);
+    void resetMessageCache();
+    bool currentMessageEnd(size_t& outEndPos);
     EventType detectEventTypeAt(const std::string& data, size_t objStart) const;
     bool scanObjectMembers(const std::string& buffer, size_t objStart,
-                           std::vector<JsonMember>& outMembers, size_t& outClosePos) const;
-    static bool findObjectEnd(const std::string& buffer, size_t fromPos, int depth, size_t& outEndPos);
+                           std::vector<JsonMember>& outMembers, size_t& outClosePos,
+                           const char* const* stopKeys = nullptr) const;
+    static bool advanceScan(const std::string& buffer, ScanState& state, char open, char close, size_t& outEndPos);
 
     // === DataModel streaming ===
     bool startStreamingDataModel();
     void processStreamingDataModel(std::vector<ParseResult>& outResults);
-    bool consumeDataModelValue(const std::string& path, size_t pos, std::vector<ParseResult>& outResults);
-    void finishDataModelMessage();
-    void emitDataModelUpdate(const std::string& path, const std::string& rawValue,
+    bool consumeDataModelValue(const std::string& path, size_t pos, bool isMember,
+                               std::vector<ParseResult>& outResults);
+    bool scanStringValueEnd(size_t quotePos, size_t& outClosePos);
+    void startWholeContainer();
+    void enterInvalidDataModel(const char* reason);
+    void finishDataModelMessage(std::vector<ParseResult>& outResults);
+    bool emitDataModelUpdate(const std::string& path, const std::string& rawValue,
                              std::vector<ParseResult>& outResults);
     std::string buildDataModelEventJson(const char* eventKey, const std::string& path,
                                         const std::string& rawValue) const;
@@ -176,7 +195,7 @@ private:
     void startMarkdownFieldStreaming(const std::string& fieldPath, size_t valueQuotePos,
                                       std::vector<ParseResult>& outResults);
     bool continueMarkdownFieldStreaming(std::vector<ParseResult>& outResults);
-    void emitAppendDataModel(const std::string& path, const std::string& delta,
+    bool emitAppendDataModel(const std::string& path, const std::string& delta,
                              std::vector<ParseResult>& outResults);
 
     // JSON parsing low-level methods
@@ -194,7 +213,16 @@ private:
     std::string _surfaceId;       // Raw (JSON-escaped) surfaceId of the streamed updateComponents
     std::string _version;         // Raw (JSON-escaped) version of the streamed updateComponents
     bool _componentsArrayClosed = false;
+    ScanState _componentScan;     // Resumable scan of the component starting at _componentScanStart
+    size_t _componentScanStart = std::string::npos;
     StreamState _streamState = StreamState::Idle;
+
+    // Cached facts about the message at the start of _dataBuffer (reset when it is consumed)
+    ScanState _msgScan;
+    bool _msgComplete = false;
+    size_t _msgEnd = 0;
+    EventType _msgType = EventType::Unknown;
+    bool _msgWaitWhole = false;   // Cannot be streamed; deliver it once it is complete
     IStreamPlugin* _plugin = nullptr;  // Optional streaming parse plugin
 
     // DataModel streaming state
@@ -206,6 +234,14 @@ private:
     size_t _dmParsePosition = 0;
     size_t _dmValueStart = 0;
     std::vector<DmStackEntry> _dmStack;
+    bool _dmWholePending = false; // A container is sent whole once it is complete (see startWholeContainer)
+    std::string _dmWholePath;
+    size_t _dmWholeStart = 0;
+    ScanState _dmWholeScan;
+    bool _dmInvalid = false;      // Malformed value: pass the message through whole once it is complete
+    size_t _dmStringScanStart = std::string::npos; // Resumable scan of a pending (unstreamed) string
+    size_t _dmStringScanPos = 0;
+    bool _dmStringScanEscaped = false;
 
     // Field-level incremental streaming state for Markdown (embedded in DM streaming)
     bool _dmMarkdownStreaming = false;       // Whether a Markdown field is currently being streamed

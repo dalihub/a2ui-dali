@@ -179,16 +179,33 @@ SET_TARGET_PROPERTIES(${TEST_NAME} PROPERTIES
 )
 
 # ============================================================
-# Stream parser test: src/stream only, no DALi / no display
+# Stream parser test: src/stream + core model, no display
 # ============================================================
+# Also links the core model (like the conformance test) to check the data model with the
+# renderer's real A2uiMessageProcessor / DataModel.
 ADD_EXECUTABLE(a2ui-stream-parser-test
   test/stream-parser-test.cpp
   ${A2UI_STREAM_SOURCES}
+  ${A2UI_CORE_SOURCES}
 )
 TARGET_INCLUDE_DIRECTORIES(a2ui-stream-parser-test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party
+  ${DALICORE_INCLUDE_DIRS}
+  ${DALIADAPTOR_INCLUDE_DIRS}
+  ${DALI_UI_FOUNDATION_INCLUDE_DIRS}
 )
+TARGET_LINK_LIBRARIES(a2ui-stream-parser-test
+  ${DALICORE_LIBRARIES}
+  ${DALIADAPTOR_LIBRARIES}
+  ${DALI_UI_FOUNDATION_LIBRARIES}
+  pthread
+)
+IF(DEFINED ENV{DESKTOP_PREFIX})
+  TARGET_LINK_DIRECTORIES(a2ui-stream-parser-test PRIVATE
+    $ENV{DESKTOP_PREFIX}/lib
+  )
+ENDIF()
 SET_TARGET_PROPERTIES(a2ui-stream-parser-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
 )

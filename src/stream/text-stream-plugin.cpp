@@ -88,9 +88,14 @@ bool TextStreamPlugin::continueComponentStreaming(
     std::vector<ProtocolStreamExtractor::ParseResult>& outResults,
     size_t& outParsePosition) {
 
+    // While the text value is still open the component cannot be complete, so only the
+    // bytes after the last sent position need to be scanned on each chunk
+    size_t closePos = 0;
+    bool valueClosed = isStringValueClosed(buffer, _lastSentContentEnd, closePos);
+
     // 1. Check whether the component JSON is fully closed
     size_t endPos = 0;
-    if (ProtocolStreamExtractor::isJsonObjectComplete(buffer, _componentStart, endPos)) {
+    if (valueClosed && ProtocolStreamExtractor::isJsonObjectComplete(buffer, _componentStart, endPos)) {
         // Component is complete; extract it to collect binding paths
         std::string component = buffer.substr(_componentStart, endPos - _componentStart + 1);
         collectBindingPath(component);
@@ -110,8 +115,7 @@ bool TextStreamPlugin::continueComponentStreaming(
     }
 
     // 2. Check whether the text value is closed
-    size_t closePos = 0;
-    if (isStringValueClosed(buffer, _textValueStart, closePos)) {
+    if (valueClosed) {
         // text value is closed; send the final delta and hand back to normal extraction
         std::string delta = extractDelta(buffer, _lastSentContentEnd, closePos);
         if (!delta.empty()) {

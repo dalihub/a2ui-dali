@@ -60,6 +60,43 @@ std::string appendPointerToken(const std::string& prefix, const std::string& tok
     return prefix + "/" + escaped;
 }
 
+// Keys after which scanObjectMembers() stops without scanning the (possibly huge) value
+const char* const kMessageKeys[] = {
+    "createSurface", "updateComponents", "updateDataModel", "appendDataModel", "deleteSurface", nullptr};
+const char* const kUpdateComponentsKey[] = {"updateComponents", nullptr};
+const char* const kComponentsKey[] = {"components", nullptr};
+const char* const kUpdateDataModelKey[] = {"updateDataModel", nullptr};
+const char* const kValueKey[] = {"value", nullptr};
+
+// Whether `buffer` from `pos` (up to its end) can still become a valid scalar
+bool isScalarPrefix(const std::string& buffer, size_t pos) {
+    char c = buffer[pos];
+    if (c == '-' || (c >= '0' && c <= '9')) {
+        return true;
+    }
+    const char* literal = (c == 't') ? "true" : (c == 'f') ? "false" : (c == 'n') ? "null" : nullptr;
+    if (!literal) {
+        return false;
+    }
+    for (size_t k = 0; literal[k] && pos + k < buffer.length(); k++) {
+        if (buffer[pos + k] != literal[k]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Keys that cannot be addressed member by member with the renderer's JSON-pointer writes:
+// "" (would address the parent), '/' and '~' (not decoded by the renderer), all-digit keys
+// (a fresh renderer model turns them into array indices), and keys written with escapes
+// (the renderer re-embeds path segments unescaped, and decodes \u surrogate pairs differently
+// inside a value than the re-encoded key would read).
+bool needsWholeContainer(const std::string& rawKey, const std::string& key) {
+    return key.empty() || rawKey.find('\\') != std::string::npos ||
+           key.find_first_of("/~") != std::string::npos ||
+           key.find_first_not_of("0123456789") == std::string::npos;
+}
+
 int hexValue(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -112,6 +149,7 @@ std::vector<ProtocolStreamExtractor::ParseResult> ProtocolStreamExtractor::drive
             }
             _dataBuffer = (endPos < _dataBuffer.length())
                 ? _dataBuffer.substr(endPos) : "";
+            resetMessageCache();
         }
     }
 
@@ -140,6 +178,7 @@ void ProtocolStreamExtractor::reset() {
     _version.clear();
     _componentsArrayClosed = false;
     _streamState = StreamState::Idle;
+    resetMessageCache();
     resetDataModelStreamState();
     if (_plugin) {
         _plugin->reset();
@@ -155,13 +194,17 @@ void ProtocolStreamExtractor::processAllCompleteEvents(std::vector<ParseResult>&
             return;
         }
 
+        // Both are cached per message, so a message arriving in many chunks is scanned once
         size_t endPos = 0;
-        bool complete = isJsonObjectComplete(_dataBuffer, 0, endPos);
-        EventType eventType = detectEventTypeAt(_dataBuffer, 0);
+        bool complete = currentMessageEnd(endPos);
+        if (_msgType == EventType::Unknown) {
+            _msgType = detectEventTypeAt(_dataBuffer, 0);
+        }
+        EventType eventType = _msgType;
 
         if (eventType == EventType::UpdateComponents) {
             // Complete or not, components are delivered one by one from the message in place
-            if (!startStreamingComponents(complete)) {
+            if ((!complete && _msgWaitWhole) || !startStreamingComponents(complete)) {
                 if (!complete) {
                     return; // surfaceId / components array not available yet
                 }
@@ -176,7 +219,7 @@ void ProtocolStreamExtractor::processAllCompleteEvents(std::vector<ParseResult>&
 
         if (!complete) {
             // Try field-level streaming for a partial updateDataModel; otherwise wait for more data
-            if (eventType == EventType::UpdateDataModel && startStreamingDataModel()) {
+            if (eventType == EventType::UpdateDataModel && !_msgWaitWhole && startStreamingDataModel()) {
                 _streamState = StreamState::StreamingDataModel;
                 processStreamingDataModel(outResults);
                 continue;
@@ -247,7 +290,7 @@ void ProtocolStreamExtractor::processStreamingData(std::vector<ParseResult>& out
 bool ProtocolStreamExtractor::startStreamingComponents(bool messageComplete) {
     std::vector<JsonMember> members;
     size_t closePos = 0;
-    scanObjectMembers(_dataBuffer, 0, members, closePos);
+    scanObjectMembers(_dataBuffer, 0, members, closePos, messageComplete ? nullptr : kUpdateComponentsKey);
 
     // Components are re-wrapped one by one with the message's version, so the version must be
     // known before streaming starts: either it precedes the payload or the message is complete.
@@ -271,11 +314,12 @@ bool ProtocolStreamExtractor::startStreamingComponents(bool messageComplete) {
         return false;
     }
     if (!messageComplete && !versionSeen) {
+        _msgWaitWhole = true;
         return false; // A version may still follow the payload; wait for the whole message
     }
 
     std::vector<JsonMember> inner;
-    scanObjectMembers(_dataBuffer, payload->valueStart, inner, closePos);
+    scanObjectMembers(_dataBuffer, payload->valueStart, inner, closePos, messageComplete ? nullptr : kComponentsKey);
     std::string surfaceId;
     bool haveSurfaceId = false;
     size_t componentsStart = std::string::npos;
@@ -291,7 +335,10 @@ bool ProtocolStreamExtractor::startStreamingComponents(bool messageComplete) {
             }
             componentsStart = m.valueStart;
             if (!messageComplete) {
-                break; // surfaceId must precede the array to stream it
+                if (!haveSurfaceId) {
+                    _msgWaitWhole = true; // surfaceId must precede the array to stream it
+                }
+                break;
             }
         }
     }
@@ -308,10 +355,10 @@ bool ProtocolStreamExtractor::startStreamingComponents(bool messageComplete) {
 }
 
 void ProtocolStreamExtractor::finishComponentsMessage() {
-    // After the components array we are inside updateComponents (depth 2). Other members may
-    // follow before the two closing braces; skip them without assuming "]}}".
+    // Other members may follow the components array before the two closing braces; the
+    // message ends where its outermost object closes.
     size_t endPos = 0;
-    if (!findObjectEnd(_dataBuffer, _parsePosition, 2, endPos)) {
+    if (!currentMessageEnd(endPos)) {
         return; // Wait for the rest of the message
     }
     consumeMessage(endPos);
@@ -337,17 +384,37 @@ void ProtocolStreamExtractor::discardUntilMessageStart() {
     }
     if (pos > 0) {
         _dataBuffer.erase(0, pos);
+        resetMessageCache();
     }
 }
 
 void ProtocolStreamExtractor::consumeMessage(size_t endPos) {
     _dataBuffer.erase(0, endPos + 1);
     _parsePosition = 0;
+    resetMessageCache();
+}
+
+void ProtocolStreamExtractor::resetMessageCache() {
+    _msgScan = ScanState();
+    _msgComplete = false;
+    _msgEnd = 0;
+    _msgType = EventType::Unknown;
+    _msgWaitWhole = false;
+    _componentScanStart = std::string::npos;
+}
+
+bool ProtocolStreamExtractor::currentMessageEnd(size_t& outEndPos) {
+    // Same rule as isJsonObjectComplete(_dataBuffer, 0, ...), resumed where the last call stopped
+    if (!_msgComplete) {
+        _msgComplete = advanceScan(_dataBuffer, _msgScan, '{', '}', _msgEnd);
+    }
+    outEndPos = _msgEnd;
+    return _msgComplete;
 }
 
 void ProtocolStreamExtractor::abandonMessageIfComplete(const char* reason) {
     size_t endPos = 0;
-    if (!isJsonObjectComplete(_dataBuffer, 0, endPos)) {
+    if (!currentMessageEnd(endPos)) {
         return; // Wait; the message is discarded once it is complete
     }
     AGENUI_LOG("discarding malformed message (%s)", reason);
@@ -400,10 +467,17 @@ bool ProtocolStreamExtractor::extractNextComponent(std::string& outComponent) {
         return false;
     }
 
+    // Resume the scan of this component where the previous chunk stopped
+    if (_componentScanStart != _parsePosition) {
+        _componentScanStart = _parsePosition;
+        _componentScan = ScanState();
+        _componentScan.pos = _parsePosition;
+    }
     size_t endPos = 0;
-    if (isJsonObjectComplete(_dataBuffer, _parsePosition, endPos)) {
+    if (advanceScan(_dataBuffer, _componentScan, '{', '}', endPos)) {
         outComponent = _dataBuffer.substr(_parsePosition, endPos - _parsePosition + 1);
         _parsePosition = endPos + 1;
+        _componentScanStart = std::string::npos;
         return true;
     }
 
@@ -411,34 +485,34 @@ bool ProtocolStreamExtractor::extractNextComponent(std::string& outComponent) {
     return false;
 }
 
-bool ProtocolStreamExtractor::findObjectEnd(const std::string& buffer, size_t fromPos, int depth, size_t& outEndPos) {
-    bool inString = false;
-    bool escaped = false;
+bool ProtocolStreamExtractor::advanceScan(const std::string& buffer, ScanState& state, char open, char close,
+                                          size_t& outEndPos) {
+    // Same rules as isJsonObjectComplete() / isJsonArrayComplete()
+    for (; state.pos < buffer.length(); state.pos++) {
+        char c = buffer[state.pos];
 
-    for (size_t i = fromPos; i < buffer.length(); i++) {
-        char c = buffer[i];
-
-        if (escaped) {
-            escaped = false;
+        if (state.escaped) {
+            state.escaped = false;
             continue;
         }
-        if (inString) {
-            if (c == '\\') {
-                escaped = true;
-            } else if (c == '"') {
-                inString = false;
-            }
+        if (c == '\\') {
+            state.escaped = true;
             continue;
         }
         if (c == '"') {
-            inString = true;
-        } else if (c == '{') {
-            depth++;
-        } else if (c == '}') {
-            depth--;
-            if (depth == 0) {
-                outEndPos = i;
-                return true;
+            state.inString = !state.inString;
+            continue;
+        }
+        if (!state.inString) {
+            if (c == open) {
+                state.depth++;
+            } else if (c == close) {
+                state.depth--;
+                if (state.depth == 0) {
+                    outEndPos = state.pos;
+                    state.pos++;
+                    return true;
+                }
             }
         }
     }
@@ -486,7 +560,8 @@ bool ProtocolStreamExtractor::isJsonObjectComplete(const std::string& json, size
 }
 
 bool ProtocolStreamExtractor::scanObjectMembers(const std::string& buffer, size_t objStart,
-                                                std::vector<JsonMember>& outMembers, size_t& outClosePos) const {
+                                                std::vector<JsonMember>& outMembers, size_t& outClosePos,
+                                                const char* const* stopKeys) const {
     outMembers.clear();
     if (objStart >= buffer.length() || buffer[objStart] != '{') {
         return false;
@@ -527,6 +602,15 @@ bool ProtocolStreamExtractor::scanObjectMembers(const std::string& buffer, size_
             return false;
         }
         member.valueStart = pos;
+        bool stop = false;
+        for (const char* const* k = stopKeys; k && *k; k++) {
+            stop = stop || member.key == *k;
+        }
+        if (stop) {
+            // The caller only needs to know where this value starts
+            outMembers.push_back(member);
+            return false;
+        }
         size_t valueEnd = 0;
         if (!extractCompleteJsonValue(buffer, pos, valueEnd)) {
             outMembers.push_back(member);
@@ -557,7 +641,7 @@ ProtocolStreamExtractor::EventType ProtocolStreamExtractor::detectEventTypeAt(co
     }
     std::vector<JsonMember> members;
     size_t closePos = 0;
-    scanObjectMembers(data, objStart, members, closePos);
+    scanObjectMembers(data, objStart, members, closePos, kMessageKeys);
     for (const auto& m : members) {
         if (m.key == "createSurface") { return EventType::CreateSurface; }
         if (m.key == "updateComponents") { return EventType::UpdateComponents; }
@@ -790,8 +874,13 @@ bool ProtocolStreamExtractor::extractCompleteJsonValue(const std::string& buffer
 // in-order application yields exactly the data model the complete message would produce:
 // every object/array that is not complete yet is first replaced by an empty container at its
 // path, then filled member by member (complete members are sent whole). Streaming only starts
-// once surfaceId, path and (if present) version are known, i.e. they precede "value"; otherwise
-// the message is delivered whole when it is complete.
+// once surfaceId, path and version are known, i.e. they precede "value"; otherwise the message
+// is delivered whole when it is complete.
+//
+// The renderer deletes on "value":null and writes keys through unescaped JSON-pointer segments,
+// so a container with a null member or an unusual key (see needsWholeContainer) is not split:
+// it is sent as one event at its own path once complete. A malformed message is delivered
+// whole, as received, exactly as an unsplit stream would deliver it.
 
 std::string ProtocolStreamExtractor::buildDataModelEventJson(const char* eventKey, const std::string& path,
                                                               const std::string& rawValue) const {
@@ -808,17 +897,18 @@ std::string ProtocolStreamExtractor::buildDataModelEventJson(const char* eventKe
     return eventJson;
 }
 
-void ProtocolStreamExtractor::emitDataModelUpdate(const std::string& path, const std::string& rawValue,
+bool ProtocolStreamExtractor::emitDataModelUpdate(const std::string& path, const std::string& rawValue,
                                                   std::vector<ParseResult>& outResults) {
     if (!nlohmann::json::accept(rawValue)) {
-        AGENUI_LOG("skipping invalid updateDataModel value at %s", path.c_str());
-        return;
+        enterInvalidDataModel("invalid value");
+        return false;
     }
     ParseResult result;
     result.type = ParseResult::Type::NormalEvent;
     result.eventType = EventType::UpdateDataModel;
     result.eventJson = buildDataModelEventJson("updateDataModel", path, rawValue);
     outResults.emplace_back(std::move(result));
+    return true;
 }
 
 void ProtocolStreamExtractor::resetDataModelStreamState() {
@@ -830,6 +920,11 @@ void ProtocolStreamExtractor::resetDataModelStreamState() {
     _dmParsePosition = 0;
     _dmValueStart = 0;
     _dmStack.clear();
+    _dmWholePending = false;
+    _dmWholePath.clear();
+    _dmWholeStart = 0;
+    _dmInvalid = false;
+    _dmStringScanStart = std::string::npos;
     _dmMarkdownStreaming = false;
     _dmMarkdownFieldPath.clear();
     _dmMarkdownValueStart = 0;
@@ -839,15 +934,19 @@ void ProtocolStreamExtractor::resetDataModelStreamState() {
 bool ProtocolStreamExtractor::startStreamingDataModel() {
     std::vector<JsonMember> members;
     size_t closePos = 0;
-    scanObjectMembers(_dataBuffer, 0, members, closePos);
+    scanObjectMembers(_dataBuffer, 0, members, closePos, kUpdateDataModelKey);
 
     std::string version;
     bool hasVersion = false;
     const JsonMember* payload = nullptr;
     for (const auto& m : members) {
         if (m.key == "version") {
+            if (!m.complete) {
+                return false;
+            }
             std::string raw;
             if (!rawStringValue(_dataBuffer, m, raw) || !decodeJsonString(raw, version)) {
+                _msgWaitWhole = true;
                 return false;
             }
             hasVersion = true;
@@ -856,31 +955,38 @@ bool ProtocolStreamExtractor::startStreamingDataModel() {
             break;
         }
     }
-    if (!payload || payload->valueStart == std::string::npos || _dataBuffer[payload->valueStart] != '{') {
+    if (!payload || payload->valueStart == std::string::npos) {
         return false;
     }
-    if (!hasVersion) {
-        return false; // A version may still follow the payload; deliver the message whole instead
+    if (_dataBuffer[payload->valueStart] != '{' || !hasVersion) {
+        // A version may still follow the payload; deliver the message whole instead
+        _msgWaitWhole = true;
+        return false;
     }
 
     std::vector<JsonMember> inner;
-    scanObjectMembers(_dataBuffer, payload->valueStart, inner, closePos);
+    scanObjectMembers(_dataBuffer, payload->valueStart, inner, closePos, kValueKey);
     std::string surfaceId;
     std::string path;
     bool havePath = false;
     for (const auto& m : inner) {
         std::string raw;
-        if (m.key == "surfaceId") {
-            if (!rawStringValue(_dataBuffer, m, raw) || !decodeJsonString(raw, surfaceId)) {
+        if (m.key == "surfaceId" || m.key == "path") {
+            if (!m.complete) {
                 return false;
             }
-        } else if (m.key == "path") {
-            if (!rawStringValue(_dataBuffer, m, raw) || !decodeJsonString(raw, path)) {
+            std::string& target = (m.key == "path") ? path : surfaceId;
+            if (!rawStringValue(_dataBuffer, m, raw) || !decodeJsonString(raw, target)) {
+                _msgWaitWhole = true;
                 return false;
             }
-            havePath = true;
+            havePath = havePath || m.key == "path";
         } else if (m.key == "value") {
-            if (surfaceId.empty() || !havePath || m.valueStart == std::string::npos) {
+            if (surfaceId.empty() || !havePath) {
+                _msgWaitWhole = true; // surfaceId and path must precede the value
+                return false;
+            }
+            if (m.valueStart == std::string::npos) {
                 return false;
             }
             resetDataModelStreamState();
@@ -899,6 +1005,37 @@ bool ProtocolStreamExtractor::startStreamingDataModel() {
 
 void ProtocolStreamExtractor::processStreamingDataModel(std::vector<ParseResult>& outResults) {
     while (true) {
+        if (_dmInvalid) {
+            // Deliver the message exactly as an unsplit stream would: whole, as received
+            size_t endPos = 0;
+            if (!currentMessageEnd(endPos)) {
+                return;
+            }
+            ParseResult result;
+            result.type = ParseResult::Type::NormalEvent;
+            result.eventType = EventType::UpdateDataModel;
+            result.eventJson = _dataBuffer.substr(0, endPos + 1);
+            outResults.emplace_back(std::move(result));
+            consumeMessage(endPos);
+            resetDataModelStreamState();
+            _streamState = StreamState::Idle;
+            return;
+        }
+
+        if (_dmWholePending) {
+            size_t endPos = 0;
+            char open = _dataBuffer[_dmWholeStart];
+            if (!advanceScan(_dataBuffer, _dmWholeScan, open, (open == '{') ? '}' : ']', endPos)) {
+                return;
+            }
+            _dmWholePending = false;
+            if (emitDataModelUpdate(_dmWholePath, _dataBuffer.substr(_dmWholeStart, endPos - _dmWholeStart + 1),
+                                    outResults)) {
+                _dmParsePosition = endPos + 1;
+            }
+            continue;
+        }
+
         // If a Markdown field is currently being streamed, handle its continuation first
         if (_dmMarkdownStreaming) {
             if (!continueMarkdownFieldStreaming(outResults)) {
@@ -909,7 +1046,7 @@ void ProtocolStreamExtractor::processStreamingDataModel(std::vector<ParseResult>
         }
 
         if (_dmValuePending) {
-            if (!consumeDataModelValue(_dmBasePath, _dmValueStart, outResults)) {
+            if (!consumeDataModelValue(_dmBasePath, _dmValueStart, false, outResults)) {
                 return;
             }
             _dmValuePending = false;
@@ -917,7 +1054,7 @@ void ProtocolStreamExtractor::processStreamingDataModel(std::vector<ParseResult>
         }
 
         if (_dmStack.empty()) {
-            finishDataModelMessage();
+            finishDataModelMessage(outResults);
             return;
         }
 
@@ -946,8 +1083,8 @@ void ProtocolStreamExtractor::processStreamingDataModel(std::vector<ParseResult>
             }
 
             if (_dataBuffer[_dmParsePosition] != '"') {
-                abandonMessageIfComplete("unexpected token in updateDataModel value");
-                return;
+                enterInvalidDataModel("unexpected token in updateDataModel value");
+                continue;
             }
             std::string rawKey;
             size_t keyEndPos = 0;
@@ -966,8 +1103,8 @@ void ProtocolStreamExtractor::processStreamingDataModel(std::vector<ParseResult>
                 return;
             }
             if (_dataBuffer[pos] != ':') {
-                abandonMessageIfComplete("missing ':' in updateDataModel value");
-                return;
+                enterInvalidDataModel("missing ':' in updateDataModel value");
+                continue;
             }
             pos++;
 
@@ -984,12 +1121,16 @@ void ProtocolStreamExtractor::processStreamingDataModel(std::vector<ParseResult>
             // Keys are JSON-decoded, then escaped as JSON-pointer tokens (~0, ~1)
             std::string key;
             if (!decodeJsonString(rawKey, key)) {
-                abandonMessageIfComplete("invalid key in updateDataModel value");
-                return;
+                enterInvalidDataModel("invalid key in updateDataModel value");
+                continue;
+            }
+            if (needsWholeContainer(rawKey, key)) {
+                startWholeContainer();
+                continue;
             }
             std::string fieldPath = appendPointerToken(topPathPrefix, key);
 
-            if (!consumeDataModelValue(fieldPath, pos, outResults)) {
+            if (!consumeDataModelValue(fieldPath, pos, true, outResults)) {
                 return;
             }
             continue;
@@ -1020,7 +1161,7 @@ void ProtocolStreamExtractor::processStreamingDataModel(std::vector<ParseResult>
 
             // consumeDataModelValue may push a child entry, so count the element first
             _dmStack.back().arrayIndex++;
-            if (!consumeDataModelValue(elementPath, _dmParsePosition, outResults)) {
+            if (!consumeDataModelValue(elementPath, _dmParsePosition, true, outResults)) {
                 _dmStack.back().arrayIndex--;
                 return;
             }
@@ -1029,43 +1170,119 @@ void ProtocolStreamExtractor::processStreamingDataModel(std::vector<ParseResult>
     }
 }
 
-bool ProtocolStreamExtractor::consumeDataModelValue(const std::string& path, size_t pos,
+bool ProtocolStreamExtractor::consumeDataModelValue(const std::string& path, size_t pos, bool isMember,
                                                     std::vector<ParseResult>& outResults) {
     if (pos >= _dataBuffer.length()) {
         return false;
     }
     char c = _dataBuffer[pos];
 
+    if (isMember && c == 'n') {
+        // The renderer deletes on "value":null, so a null member cannot be sent on its own
+        // (an array would also get a gap); send the enclosing container whole instead.
+        startWholeContainer();
+        return true;
+    }
+
+    if (c == '"') {
+        // For string values, check whether this is a streaming binding path
+        if (_plugin && _plugin->shouldStreamField(path)) {
+            startMarkdownFieldStreaming(path, pos, outResults);
+            return true;
+        }
+        size_t closePos = 0;
+        if (!scanStringValueEnd(pos, closePos)) {
+            return false;
+        }
+        if (emitDataModelUpdate(path, _dataBuffer.substr(pos, closePos - pos + 1), outResults)) {
+            _dmParsePosition = closePos + 1;
+        }
+        return true;
+    }
+
     size_t valueEndPos = 0;
     if (extractCompleteJsonValue(_dataBuffer, pos, valueEndPos)) {
-        emitDataModelUpdate(path, _dataBuffer.substr(pos, valueEndPos - pos + 1), outResults);
-        _dmParsePosition = valueEndPos + 1;
+        if (emitDataModelUpdate(path, _dataBuffer.substr(pos, valueEndPos - pos + 1), outResults)) {
+            _dmParsePosition = valueEndPos + 1;
+        }
         return true;
     }
 
     if (c == '{' || c == '[') {
         // Replace whatever is at this path with an empty container, then fill it member by member
-        emitDataModelUpdate(path, (c == '{') ? "{}" : "[]", outResults);
-        _dmStack.push_back(DmStackEntry(
-            (c == '{') ? DmStackEntry::Type::Object : DmStackEntry::Type::Array, path, 0));
-        _dmParsePosition = pos + 1;
+        if (emitDataModelUpdate(path, (c == '{') ? "{}" : "[]", outResults)) {
+            _dmStack.push_back(DmStackEntry(
+                (c == '{') ? DmStackEntry::Type::Object : DmStackEntry::Type::Array, path, 0, pos));
+            _dmParsePosition = pos + 1;
+        }
         return true;
     }
 
-    // For string values, check whether this is a streaming binding path
-    if (c == '"' && _plugin && _plugin->shouldStreamField(path)) {
-        startMarkdownFieldStreaming(path, pos, outResults);
+    if (!isScalarPrefix(_dataBuffer, pos)) {
+        enterInvalidDataModel("invalid value");
         return true;
     }
-
     return false; // Wait until the scalar value is complete
 }
 
-void ProtocolStreamExtractor::finishDataModelMessage() {
-    // After the value we are inside updateDataModel (depth 2); skip any members that follow
+bool ProtocolStreamExtractor::scanStringValueEnd(size_t quotePos, size_t& outClosePos) {
+    // Resumable search for the closing quote of the string that opens at quotePos
+    if (_dmStringScanStart != quotePos) {
+        _dmStringScanStart = quotePos;
+        _dmStringScanPos = quotePos + 1;
+        _dmStringScanEscaped = false;
+    }
+    for (; _dmStringScanPos < _dataBuffer.length(); _dmStringScanPos++) {
+        char c = _dataBuffer[_dmStringScanPos];
+        if (_dmStringScanEscaped) {
+            _dmStringScanEscaped = false;
+        } else if (c == '\\') {
+            _dmStringScanEscaped = true;
+        } else if (c == '"') {
+            outClosePos = _dmStringScanPos;
+            _dmStringScanStart = std::string::npos;
+            return true;
+        }
+    }
+    return false;
+}
+
+void ProtocolStreamExtractor::startWholeContainer() {
+    // Stop member-by-member delivery for the innermost open container; it is sent as one
+    // updateDataModel at its own path once it is complete.
+    const DmStackEntry& top = _dmStack.back();
+    _dmWholePending = true;
+    _dmWholePath = top.pathPrefix;
+    _dmWholeStart = top.start;
+    _dmWholeScan = ScanState();
+    _dmWholeScan.pos = top.start;
+    _dmStack.pop_back();
+}
+
+void ProtocolStreamExtractor::enterInvalidDataModel(const char* reason) {
+    AGENUI_LOG("updateDataModel: %s; delivering the message unsplit", reason);
+    _dmInvalid = true;
+    _dmValuePending = false;
+    _dmWholePending = false;
+    _dmMarkdownStreaming = false;
+    _dmStack.clear();
+}
+
+void ProtocolStreamExtractor::finishDataModelMessage(std::vector<ParseResult>& outResults) {
+    // Other members may follow the value; the message ends where its outermost object closes
     size_t endPos = 0;
-    if (!findObjectEnd(_dataBuffer, _dmParsePosition, 2, endPos)) {
+    if (!currentMessageEnd(endPos)) {
         return; // Wait for the rest of the message
+    }
+    if (!nlohmann::json::accept(_dataBuffer.data(), _dataBuffer.data() + endPos + 1)) {
+        // Malformed outside the parts streamed so far (e.g. a missing comma): an unsplit stream
+        // delivers such a message as received, so do the same
+        AGENUI_LOG("updateDataModel: malformed message; delivering it unsplit");
+        ParseResult result;
+        result.type = ParseResult::Type::NormalEvent;
+        result.eventType = EventType::UpdateDataModel;
+        result.eventJson = _dataBuffer.substr(0, endPos + 1);
+        outResults.emplace_back(std::move(result));
     }
     consumeMessage(endPos);
     resetDataModelStreamState();
@@ -1074,18 +1291,19 @@ void ProtocolStreamExtractor::finishDataModelMessage() {
 
 // MARK: - Field-level incremental streaming (sub-process embedded in DM streaming)
 
-void ProtocolStreamExtractor::emitAppendDataModel(const std::string& path, const std::string& delta,
+bool ProtocolStreamExtractor::emitAppendDataModel(const std::string& path, const std::string& delta,
                                                   std::vector<ParseResult>& outResults) {
     std::string rawValue = "\"" + delta + "\"";
     if (!nlohmann::json::accept(rawValue)) {
-        AGENUI_LOG("skipping invalid appendDataModel delta at %s", path.c_str());
-        return;
+        enterInvalidDataModel("invalid string content");
+        return false;
     }
     ParseResult result;
     result.type = ParseResult::Type::NormalEvent;
     result.eventType = EventType::AppendDataModel;
     result.eventJson = buildDataModelEventJson("appendDataModel", path, rawValue);
     outResults.emplace_back(std::move(result));
+    return true;
 }
 
 void ProtocolStreamExtractor::startMarkdownFieldStreaming(const std::string& fieldPath, size_t valueQuotePos,
@@ -1096,8 +1314,9 @@ void ProtocolStreamExtractor::startMarkdownFieldStreaming(const std::string& fie
     if (findClosingQuote(_dataBuffer, contentStart, closePos)) {
         // String is complete; send it as a regular field (complete JSON string value with quotes)
         std::string rawValue = _dataBuffer.substr(valueQuotePos, closePos - valueQuotePos + 1);
-        emitDataModelUpdate(fieldPath, rawValue, outResults);
-        _dmParsePosition = closePos + 1;
+        if (emitDataModelUpdate(fieldPath, rawValue, outResults)) {
+            _dmParsePosition = closePos + 1;
+        }
         // _dmMarkdownStreaming remains false
         return;
     }
@@ -1110,7 +1329,9 @@ void ProtocolStreamExtractor::startMarkdownFieldStreaming(const std::string& fie
 
     size_t safeEnd = findSafeStringCut(_dataBuffer, contentStart, _dataBuffer.length());
     std::string partialContent = _dataBuffer.substr(contentStart, safeEnd - contentStart);
-    emitDataModelUpdate(fieldPath, "\"" + partialContent + "\"", outResults);
+    if (!emitDataModelUpdate(fieldPath, "\"" + partialContent + "\"", outResults)) {
+        return; // Invalid content; the message is delivered whole instead
+    }
     _dmMarkdownLastSentEnd = safeEnd;
 }
 
@@ -1121,7 +1342,9 @@ bool ProtocolStreamExtractor::continueMarkdownFieldStreaming(std::vector<ParseRe
         // String is complete
         if (closePos > _dmMarkdownLastSentEnd) {
             std::string delta = _dataBuffer.substr(_dmMarkdownLastSentEnd, closePos - _dmMarkdownLastSentEnd);
-            emitAppendDataModel(_dmMarkdownFieldPath, delta, outResults);
+            if (!emitAppendDataModel(_dmMarkdownFieldPath, delta, outResults)) {
+                return true; // Invalid content; handled by the invalid-message path
+            }
         }
 
         _dmParsePosition = closePos + 1;
@@ -1133,7 +1356,9 @@ bool ProtocolStreamExtractor::continueMarkdownFieldStreaming(std::vector<ParseRe
     size_t safeEnd = findSafeStringCut(_dataBuffer, _dmMarkdownLastSentEnd, _dataBuffer.length());
     if (safeEnd > _dmMarkdownLastSentEnd) {
         std::string delta = _dataBuffer.substr(_dmMarkdownLastSentEnd, safeEnd - _dmMarkdownLastSentEnd);
-        emitAppendDataModel(_dmMarkdownFieldPath, delta, outResults);
+        if (!emitAppendDataModel(_dmMarkdownFieldPath, delta, outResults)) {
+            return true; // Invalid content; handled by the invalid-message path
+        }
         _dmMarkdownLastSentEnd = safeEnd;
     }
 
