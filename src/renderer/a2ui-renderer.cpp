@@ -75,6 +75,17 @@ bool IsActivationKey(const std::string& keyName)
 // (already visible — the movie_detail block floated up a second time when
 // recommendations_section arrived). Restoring on scope exit confines the
 // fresh render to the new subtree. Also exception-safe.
+// Removes @p id from the set of components on the current render path on scope exit.
+struct RenderingIdGuard
+{
+  std::unordered_set<std::string>& ids;
+  std::string                      id;
+  ~RenderingIdGuard()
+  {
+    ids.erase(id);
+  }
+};
+
 struct PartialRenderStateGuard
 {
   bool&                           mode;
@@ -257,6 +268,14 @@ View A2uiRenderer::RenderComponent(const std::string& id,
     return placeholder;
   }
 
+  // A component that lists itself among its own descendants would recurse until the
+  // stack overflows. Render the repeated occurrence as the unknown-component box.
+  if(!mRenderingIds.insert(id).second)
+  {
+    DALI_LOG_ERROR("[A2UI] Renderer: Component '%s' contains itself\n", id.c_str());
+    return RenderPlaceholder(*comp);
+  }
+  RenderingIdGuard renderingGuard{mRenderingIds, id};
 
   // Track which component is being rendered so RecordWatch can associate
   // watchers with this component for later incremental retirement.

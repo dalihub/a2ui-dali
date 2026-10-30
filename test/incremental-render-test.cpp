@@ -411,6 +411,32 @@ void TestListResendReleasesItems(A2ui::A2uiHost& host, std::map<std::string, Vie
              "got '" + Joined(views["rel"]) + "'");
 }
 
+// ========================================================================
+// Test 9: A component that contains itself renders without recursing forever.
+// ========================================================================
+void TestSelfContainingComponent(A2ui::A2uiHost& host, std::map<std::string, View>& views)
+{
+  std::cout << "\n=== Test: Self-containing Component ===" << std::endl;
+
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"self","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"self","components":[
+    {"id":"root","component":"Column","children":["a"]},
+    {"id":"a","component":"Text","text":"A"}
+  ]}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"self","components":[
+    {"id":"a","component":"Column","children":["a"]}
+  ]}})");
+  ReportTest("incremental self-reference renders", !!views["self"], "no view");
+
+  host.JsonFeed(R"({"version":"v0.9","createSurface":{"surfaceId":"self2","catalogId":"basic"}})");
+  host.JsonFeed(R"({"version":"v0.9","updateComponents":{"surfaceId":"self2","components":[
+    {"id":"root","component":"Column","children":["b"]},
+    {"id":"b","component":"Column","children":["c"]},
+    {"id":"c","component":"Column","children":["b"]}
+  ]}})");
+  ReportTest("full render of a cycle renders", !!views["self2"], "no view");
+}
+
 } // anonymous namespace
 
 class TestApp : public Dali::ConnectionTracker
@@ -444,6 +470,7 @@ private:
     TestListResend(mHost, mViews);
     TestListRebuildAcrossSurfaces(mHost, mViews);
     TestListResendReleasesItems(mHost, mViews);
+    TestSelfContainingComponent(mHost, mViews);
 
     std::cout << "\n========================================" << std::endl;
     std::cout << "  RESULTS: " << gPassed << "/" << gTotal << " passed" << std::endl;

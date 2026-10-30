@@ -401,6 +401,9 @@ private:
   /// A data-driven List rebuild can also run while another surface owns that state.
   int mTemplateItemDepth = 0;
 
+  /// Components on the current RenderComponent path, to stop a self-containing tree.
+  std::unordered_set<std::string> mRenderingIds;
+
   /// Marks a stretch of template item rendering (see mTemplateItemDepth).
   struct TemplateItemScope
   {
